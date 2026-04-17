@@ -12,7 +12,7 @@ Features:
 7. Semantic search
 
 Author: IntelliWeave Cognitive Synthesis Engine
-For: Seth Tillotson, MD - Prophetic Journey Network Analysis
+For: Seth Tillotson — Prophetic Journey Network Analysis
 """
 
 import streamlit as st
@@ -23,6 +23,7 @@ import networkx as nx
 from datetime import datetime, timedelta
 import json
 import os
+import traceback
 from pathlib import Path
 
 # Import utility modules
@@ -84,63 +85,33 @@ def check_password():
     """Password authentication gate"""
     
     def password_entered():
-        """Check if password is correct"""
         if st.session_state["password"] == st.secrets["ACCESS_PASSWORD"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # First run, show password input
         st.markdown('<h1 class="main-header">🕊️ Prophetic Network Dashboard</h1>', unsafe_allow_html=True)
         st.markdown("### 🔐 Authentication Required")
-        st.text_input(
-            "Enter Password",
-            type="password",
-            on_change=password_entered,
-            key="password"
-        )
+        st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
         st.info("**For Remnant Access Only** — Enter the password to continue")
         return False
-    
     elif not st.session_state["password_correct"]:
-        # Password incorrect
         st.markdown('<h1 class="main-header">🕊️ Prophetic Network Dashboard</h1>', unsafe_allow_html=True)
         st.markdown("### 🔐 Authentication Required")
-        st.text_input(
-            "Enter Password",
-            type="password",
-            on_change=password_entered,
-            key="password"
-        )
+        st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
         st.error("❌ Incorrect password. Try again.")
         return False
-    
     else:
-        # Password correct
         return True
 
 # Check authentication first
 if not check_password():
     st.stop()
 
-# ============ TEMPORARY: LIST ALL GRAPHS IN ACCOUNT ============
-if st.sidebar.button("🔍 Debug: List my InfraNodus graphs"):
-    with st.spinner("Fetching graph list..."):
-        try:
-            graphs = infranodus_api.list_graphs()
-            st.sidebar.success(f"Found {len(graphs)} graphs")
-            for g in graphs:
-                # InfraNodus returns graph metadata - show the name field
-                st.sidebar.code(json.dumps(g, indent=2)[:300])
-        except Exception as e:
-            st.sidebar.error(f"List failed: {e}")
-# ============ END DIAGNOSTIC ============
-
-
 # ============================================================================
-# INITIALIZE SERVICES
+# INITIALIZE SERVICES  ← MOVED UP, BEFORE THE DEBUG BUTTON
 # ============================================================================
 
 @st.cache_resource
@@ -156,6 +127,68 @@ def init_services():
     return infranodus, mcp, cache, visualizer
 
 infranodus_api, mcp_client, data_cache, graph_viz = init_services()
+
+# ============================================================================
+# DIAGNOSTIC SIDEBAR TOOLS  ← MOVED DOWN, NOW infranodus_api EXISTS
+# ============================================================================
+
+with st.sidebar:
+    with st.expander("🔧 Diagnostics", expanded=False):
+        if st.button("🔍 List my InfraNodus graphs"):
+            with st.spinner("Fetching graph list..."):
+                try:
+                    graphs = infranodus_api.list_graphs()
+                    
+                    st.success(f"✅ Raw response type: `{type(graphs).__name__}`")
+                    
+                    if isinstance(graphs, list):
+                        st.success(f"Found **{len(graphs)}** graphs in your account:")
+                        for i, g in enumerate(graphs, 1):
+                            if isinstance(g, dict):
+                                # Try the most likely field names for graph identifier
+                                name = (g.get("name") 
+                                        or g.get("graphName") 
+                                        or g.get("title") 
+                                        or g.get("id") 
+                                        or "[no name field]")
+                                st.code(f"{i}. {name}")
+                                # Also show full metadata in expandable block
+                                with st.expander(f"Full metadata for graph {i}"):
+                                    st.json(g)
+                            else:
+                                st.code(f"{i}. {str(g)[:200]}")
+                    elif isinstance(graphs, dict):
+                        st.success("Response is a dict:")
+                        st.json(graphs)
+                    else:
+                        st.warning(f"Unexpected response type: {type(graphs).__name__}")
+                        st.code(str(graphs)[:1000])
+                        
+                except Exception as e:
+                    st.error(f"❌ {type(e).__name__}: {str(e)[:400]}")
+                    with st.expander("Full traceback"):
+                        st.code(traceback.format_exc())
+        
+        if st.button("🧪 Test API connection"):
+            with st.spinner("Testing..."):
+                try:
+                    import requests
+                    api_key = st.secrets.get("INFRANODUS_API_KEY", "")
+                    r = requests.post(
+                        "https://infranodus.com/api/v1/listGraphs",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        timeout=15
+                    )
+                    st.write(f"**HTTP Status:** `{r.status_code}`")
+                    st.write(f"**Response size:** `{len(r.text)}` bytes")
+                    st.write(f"**Content type:** `{r.headers.get('content-type', 'unknown')}`")
+                    st.code(r.text[:800])
+                except Exception as e:
+                    st.error(f"{type(e).__name__}: {e}")
+
 
 # ============================================================================
 # HEADER
@@ -222,34 +255,48 @@ with st.sidebar:
 # LOAD DATA
 # ============================================================================
 
-# Map dashboard layer selection → actual InfraNodus graph names in your account
+# Map dashboard layer selection → actual InfraNodus graph names
 LAYER_GRAPH_MAP = {
-    "Layer 1": "md__meditation-g",
-    "Layer 2": "md__meditation-g",  # Layer 2 is derived from Layer 1
+    # Short forms
+    "Layer 1": "seth_tillotson_md__meditation-g",
+    "Layer 2": "seth_tillotson_md__meditation-g",
     "Layer 3": "New_Test_2",
-    # Add aliases for however your layer selector is labeled:
-    "Full Network (Layer 1)": "md__meditation-g",
-    "Deep Network (Layer 2)": "md__meditation-g",
+    
+    # Descriptive forms
+    "Full Network (Layer 1)": "seth_tillotson_md__meditation-g",
+    "Deep Network (Layer 2)": "seth_tillotson_md__meditation-g",
     "Kairos Transition (Layer 3)": "New_Test_2",
+    
+    # "Latest" variants (what your dropdown is currently sending)
+    "Layer 1 (Full Network)": "seth_tillotson_md__meditation-g",
+    "Layer 2 (Deep Analysis)": "seth_tillotson_md__meditation-g",
+    "Layer 2 (Mind-Spirit Bridge)": "seth_tillotson_md__meditation-g",
+    "Layer 3 (Latest)": "New_Test_2",
+    "Layer 3 (Kairos)": "New_Test_2",
+    "Layer 3 (Kairos Transition)": "New_Test_2",
 }
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+
+@st.cache_data(ttl=300)
 def load_network_data(layer_name):
     """Load network data from InfraNodus API for the selected layer"""
     
-    # Resolve the actual graph name from the layer selection
-    graph_name = LAYER_GRAPH_MAP.get(layer_name)
+    # Normalize: just look for "Layer 1", "Layer 2", or "Layer 3" substring
+    layer_key = layer_name.lower()
     
-    if not graph_name:
-        st.error(f"⚠️ Unknown layer: '{layer_name}'. Available: {list(LAYER_GRAPH_MAP.keys())}")
+    if "layer 3" in layer_key or "kairos" in layer_key:
+        graph_name = "New_Test_2"
+    elif "layer 1" in layer_key or "layer 2" in layer_key or "full" in layer_key or "deep" in layer_key or "mind" in layer_key:
+        graph_name = "seth_tillotson_md__meditation-g"
+    else:
+        st.error(f"⚠️ Unknown layer: '{layer_name}'")
         return None
     
-    # Try cache first
+    # Try cache
     cached = data_cache.get(f"network_{graph_name}")
     if cached:
         return cached
     
-    # Fetch from API
     with st.spinner(f"Loading '{graph_name}' from InfraNodus..."):
         try:
             response = infranodus_api.get_graph_and_statements(
@@ -260,9 +307,8 @@ def load_network_data(layer_name):
                 gap_depth=2
             )
             
-            # Defensive check: did we actually get graph data back?
             if not response:
-                st.error(f"⚠️ Empty response from InfraNodus for graph '{graph_name}'")
+                st.error(f"⚠️ Empty response for graph '{graph_name}'")
                 return None
             
             graph = response.get("graph") or {}
@@ -271,12 +317,10 @@ def load_network_data(layer_name):
             
             if not nodes:
                 st.warning(
-                    f"⚠️ Graph '{graph_name}' exists but has no nodes. "
+                    f"⚠️ Graph '{graph_name}' exists but returned no nodes. "
                     f"Response keys: {list(response.keys())}"
                 )
-                # Still return so user can see what came back
             
-            # Cache it
             data_cache.set(f"network_{graph_name}", response)
             return response
             
@@ -286,6 +330,7 @@ def load_network_data(layer_name):
             with st.expander("Full error traceback"):
                 st.code(traceback.format_exc())
             return None
+
 
 # Load data based on selected layer
 network_data = load_network_data(layer)
