@@ -1,30 +1,9 @@
-# Prophetic Network Dashboard - Python Dependencies
-# Compatible with Streamlit Cloud
-
-# Core Framework
-streamlit==1.31.0
-
-# Data Processing
-pandas==2.1.4
-numpy==1.26.3
-
-# Network Analysis
-networkx==3.2.1
-
-# Visualization
-plotly==5.18.0
-
-# HTTP Requests
-requests==2.31.0
-
-# Environment Variables
-python-dotenv==1.0.0
-
-# Date/Time
-python-dateutil==2.8.2
-
-# JSON Processing (built-in, but specify for clarity)
-# json - built-in
-
-# Optional: File Watching (if implementing auto-sync)
-watchdog==3.0.0
+streamlit>=1.36.0
+pandas>=2.2.0
+numpy>=1.26.0
+plotly>=5.22.0
+networkx>=3.3
+pillow>=10.4.0
+requests>=2.32.0
+python-dotenv>=1.0.1
+openai>=1.40.0
