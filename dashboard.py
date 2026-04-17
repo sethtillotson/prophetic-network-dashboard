@@ -218,17 +218,9 @@ with st.sidebar:
 
 # Map dashboard layer selection → actual InfraNodus graph names
 LAYER_GRAPH_MAP = {
-    # Short forms
     "Layer 1": "seth_tillotson_md__meditation-g",
     "Layer 2": "seth_tillotson_md__meditation-g",
     "Layer 3": "New_Test_2",
-    
-    # Descriptive forms
-    "Full Network (Layer 1)": "seth_tillotson_md__meditation-g",
-    "Deep Network (Layer 2)": "seth_tillotson_md__meditation-g",
-    "Kairos Transition (Layer 3)": "New_Test_2",
-    
-    # "Latest" variants (what your dropdown is currently sending)
     "Layer 1 (Full Network)": "seth_tillotson_md__meditation-g",
     "Layer 2 (Deep Analysis)": "seth_tillotson_md__meditation-g",
     "Layer 2 (Mind-Spirit Bridge)": "seth_tillotson_md__meditation-g",
@@ -237,21 +229,22 @@ LAYER_GRAPH_MAP = {
     "Layer 3 (Kairos Transition)": "New_Test_2",
 }
 
-
-@st.cache_data(ttl=300)
-def load_network_data(layer_name):
-    """Load network data from InfraNodus API for the selected layer"""
-    
-    # Normalize: just look for "Layer 1", "Layer 2", or "Layer 3" substring
-    layer_key = layer_name.lower()
-    
-    if "layer 3" in layer_key or "kairos" in layer_key:
-        graph_name = "New_Test_2"
-    elif "layer 1" in layer_key or "layer 2" in layer_key or "full" in layer_key or "deep" in layer_key or "mind" in layer_key:
-        graph_name = "seth_tillotson_md__meditation-g"
-    else:
-        st.error(f"⚠️ Unknown layer: '{layer_name}'")
+@st.cache_data(ttl=300, show_spinner="Loading network graph...")
+def load_network_data(layer_name: str):
+    graph_name = LAYER_GRAPH_MAP.get(layer_name)
+    if not graph_name:
+        st.error(f"⚠️ Unknown layer: '{layer_name}'. Available: {list(LAYER_GRAPH_MAP.keys())}")
         return None
+    try:
+        data = infranodus_api.get_graph(graph_name)
+        if not data or (isinstance(data, dict) and not data.get("graph") and not data.get("nodes")):
+            st.warning(f"⚠️ Graph '{graph_name}' returned empty. Check name spelling.")
+            return None
+        return data
+    except Exception as e:
+        st.error(f"❌ Error loading '{graph_name}': {e}")
+        return None
+
     
     # Try cache
     cached = data_cache.get(f"network_{graph_name}")
