@@ -308,7 +308,7 @@ with st.spinner("Generating network visualization..."):
         highlight_node=node_search if node_search else None
     )
     
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True})
+    st.plotly_chart(fig, width='stretch', config={'displayModeBar': True})
 
 # ============================================================================
 # TWO COLUMN LAYOUT
@@ -336,7 +336,7 @@ with col_left:
         
         st.dataframe(
             top_nodes_df[['Rank', 'Node', 'BC', 'Degree', 'Weight', 'Cluster', 'Trend']],
-            use_container_width=True,
+            width='stretch',
             height=600
         )
     else:
@@ -384,7 +384,7 @@ with col_right:
             height=400
         )
         
-        st.plotly_chart(fig_sentiment, use_container_width=True)
+        st.plotly_chart(fig_sentiment, width='stretch')
     else:
         # Show current sentiment
         sentiment = network_data.get('sentiment', {})
@@ -430,7 +430,7 @@ if community_timeline:
         height=400
     )
     
-    st.plotly_chart(fig_communities, use_container_width=True)
+    st.plotly_chart(fig_communities, width='stretch')
 else:
     st.info("Community timeline will appear after multiple analyses are recorded")
 
