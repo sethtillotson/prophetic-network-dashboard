@@ -10,9 +10,9 @@ from typing import Dict, List, Optional, Any
 class InfraNodusAPI:
     """Direct API client for InfraNodus knowledge graph service"""
     
-    BASE_URL = "https://infranodus.com/api/v1"
+    BASE_URL = "https://www.infranodus.com/api/v1"
     
-    def __init__(self, api_key: str):
+    def __init__(self, INFRANODUS_API_KEY: str):
         """
         Initialize API client
         
