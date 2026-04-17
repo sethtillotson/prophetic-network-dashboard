@@ -32,6 +32,12 @@ from utils.mcp_client import MCPClient
 from utils.graph_visualizer import GraphVisualizer
 from utils.data_cache import DataCache
 
+check_password()
+# Everything below this line only runs when authenticated
+init_services()
+# ... rest of dashboard
+
+
 # Page configuration
 st.set_page_config(
     page_title="Prophetic Network Dashboard",
@@ -81,59 +87,45 @@ st.markdown("""
 # AUTHENTICATION
 # ============================================================================
 
-def check_password():
-    """Password authentication gate — defensive against session_state race conditions"""
-    
-    def password_entered():
-        """Callback when user submits password"""
-        # Guard against missing key during the rerun cycle
-        entered = st.session_state.get("password", "")
-        expected = st.secrets.get("ACCESS_PASSWORD", "")
-        
-        if entered and expected and entered == expected:
+def check_password() -> bool:
+    """
+    Bulletproof password gate. Survives reruns from button clicks,
+    widget interactions, and cache invalidations.
+    """
+    # --- 1. Fast path: already authenticated ---
+    if st.session_state.get("password_correct", False) is True:
+        return True
+
+    # --- 2. Read expected password from secrets ---
+    expected = st.secrets.get("ACCESS_PASSWORD", "")
+    if not expected:
+        st.error("🔐 ACCESS_PASSWORD missing from Streamlit Cloud → Settings → Secrets.")
+        st.stop()
+
+    # --- 3. Show the gate ---
+    st.markdown("### 🔐 Prophetic Network Dashboard")
+    st.markdown("Enter the access password to continue.")
+
+    # Use a FORM so the button click is the only trigger
+    with st.form("auth_form", clear_on_submit=False):
+        pwd = st.text_input(
+            "Access Password",
+            type="password",
+            key="auth_pwd_input",  # unique key, NOT "password"
+        )
+        submitted = st.form_submit_button("Enter")
+
+    if submitted:
+        if pwd == expected:
             st.session_state["password_correct"] = True
-            # Safe delete
-            if "password" in st.session_state:
-                del st.session_state["password"]
+            st.rerun()  # clean rerun into authenticated state
         else:
             st.session_state["password_correct"] = False
-    
-    # Initialize the flag if it doesn't exist (prevents first-run KeyError)
-    if "password_correct" not in st.session_state:
-        st.session_state["password_correct"] = False
-    
-    # If already authenticated, let through
-    if st.session_state["password_correct"]:
-        return True
-    
-    # Otherwise show the login screen
-    st.markdown('<h1 class="main-header">🕊️ Prophetic Network Dashboard</h1>', unsafe_allow_html=True)
-    st.markdown("### 🔐 Authentication Required")
-    
-    st.text_input(
-        "Enter Password",
-        type="password",
-        on_change=password_entered,
-        key="password"
-    )
-    
-    # Show an error ONLY if they've already tried and failed
-    # (i.e., password_correct has been set to False after an attempt, not just on first load)
-    if "password" not in st.session_state and not st.session_state["password_correct"]:
-        # This branch hits after a failed submission
-        if st.session_state.get("_password_attempted", False):
-            st.error("❌ Incorrect password. Try again.")
-    
-    # Mark that an attempt has begun once the input exists
-    if "password" in st.session_state:
-        st.session_state["_password_attempted"] = True
-    
-    st.info("**For Remnant Access Only** — Enter the password to continue")
-    return False
+            st.error("❌ Incorrect password.")
 
-# Check authentication first
-if not check_password():
+    # Stop rendering the rest of the app until authenticated
     st.stop()
+
 
 
 # ============================================================================
