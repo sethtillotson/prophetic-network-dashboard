@@ -82,33 +82,59 @@ st.markdown("""
 # ============================================================================
 
 def check_password():
-    """Password authentication gate"""
+    """Password authentication gate — defensive against session_state race conditions"""
     
     def password_entered():
-        if st.session_state["password"] == st.secrets["ACCESS_PASSWORD"]:
+        """Callback when user submits password"""
+        # Guard against missing key during the rerun cycle
+        entered = st.session_state.get("password", "")
+        expected = st.secrets.get("ACCESS_PASSWORD", "")
+        
+        if entered and expected and entered == expected:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]
+            # Safe delete
+            if "password" in st.session_state:
+                del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
-
+    
+    # Initialize the flag if it doesn't exist (prevents first-run KeyError)
     if "password_correct" not in st.session_state:
-        st.markdown('<h1 class="main-header">🕊️ Prophetic Network Dashboard</h1>', unsafe_allow_html=True)
-        st.markdown("### 🔐 Authentication Required")
-        st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
-        st.info("**For Remnant Access Only** — Enter the password to continue")
-        return False
-    elif not st.session_state["password_correct"]:
-        st.markdown('<h1 class="main-header">🕊️ Prophetic Network Dashboard</h1>', unsafe_allow_html=True)
-        st.markdown("### 🔐 Authentication Required")
-        st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
-        st.error("❌ Incorrect password. Try again.")
-        return False
-    else:
+        st.session_state["password_correct"] = False
+    
+    # If already authenticated, let through
+    if st.session_state["password_correct"]:
         return True
+    
+    # Otherwise show the login screen
+    st.markdown('<h1 class="main-header">🕊️ Prophetic Network Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown("### 🔐 Authentication Required")
+    
+    st.text_input(
+        "Enter Password",
+        type="password",
+        on_change=password_entered,
+        key="password"
+    )
+    
+    # Show an error ONLY if they've already tried and failed
+    # (i.e., password_correct has been set to False after an attempt, not just on first load)
+    if "password" not in st.session_state and not st.session_state["password_correct"]:
+        # This branch hits after a failed submission
+        if st.session_state.get("_password_attempted", False):
+            st.error("❌ Incorrect password. Try again.")
+    
+    # Mark that an attempt has begun once the input exists
+    if "password" in st.session_state:
+        st.session_state["_password_attempted"] = True
+    
+    st.info("**For Remnant Access Only** — Enter the password to continue")
+    return False
 
 # Check authentication first
 if not check_password():
     st.stop()
+
 
 # ============================================================================
 # INITIALIZE SERVICES  ← MOVED UP, BEFORE THE DEBUG BUTTON
