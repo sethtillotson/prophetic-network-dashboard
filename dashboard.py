@@ -1,211 +1,145 @@
 """
 PROPHETIC NETWORK DASHBOARD
-Interactive knowledge graph visualization with GraphRAG semantic search
-
-Features:
-1. Live network graph (top 150 nodes, all edges)
-2. Top 20 nodes table with trending arrows
-3. Community evolution timeline
-4. Sentiment trend analysis
-5. Gap alerts + bridge suggestions
-6. GraphRAG natural language queries
-7. Semantic search
-
-Author: IntelliWeave Cognitive Synthesis Engine
-For: Seth Tillotson — Prophetic Journey Network Analysis
+Living Topology of Transformation — Interactive Network Intelligence
+Author: Seth Tillotson
 """
 
 import streamlit as st
-import plotly.graph_objects as go
-import plotly.express as px
-import pandas as pd
-import networkx as nx
-from datetime import datetime, timedelta
 import json
-import os
+import requests
 import traceback
-from pathlib import Path
 
-# Import utility modules
 from utils.infranodus_api import InfraNodusAPI
-from utils.mcp_client import MCPClient
-from utils.graph_visualizer import GraphVisualizer
 from utils.data_cache import DataCache
 
-check_password()
-# Everything below this line only runs when authenticated
-init_services()
-# ... rest of dashboard
-
-
-# Page configuration
+# ═══════════════════════════════════════════════════════════════
+# PAGE CONFIG (must be first Streamlit call)
+# ═══════════════════════════════════════════════════════════════
 st.set_page_config(
     page_title="Prophetic Network Dashboard",
     page_icon="🕊️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem;
-        font-weight: bold;
-        text-align: center;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 1rem;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-        margin: 0.5rem 0;
-    }
-    .gap-alert {
-        background: #fff3cd;
-        border-left: 4px solid #ffc107;
-        padding: 1rem;
-        margin: 1rem 0;
-        border-radius: 5px;
-    }
-    .search-result {
-        background: #f8f9fa;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-radius: 5px;
-        border-left: 3px solid #667eea;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ============================================================================
-# AUTHENTICATION
-# ============================================================================
-
-def check_password() -> bool:
+# ═══════════════════════════════════════════════════════════════
+# AUTHENTICATION GATE (defined BEFORE it's called)
+# ═══════════════════════════════════════════════════════════════
+def check_password() -> None:
     """
     Bulletproof password gate. Survives reruns from button clicks,
     widget interactions, and cache invalidations.
+    Calls st.stop() until authenticated; never returns False.
     """
-    # --- 1. Fast path: already authenticated ---
+    # Fast path: already authenticated
     if st.session_state.get("password_correct", False) is True:
-        return True
+        return
 
-    # --- 2. Read expected password from secrets ---
+    # Read expected password from secrets
     expected = st.secrets.get("ACCESS_PASSWORD", "")
     if not expected:
         st.error("🔐 ACCESS_PASSWORD missing from Streamlit Cloud → Settings → Secrets.")
         st.stop()
 
-    # --- 3. Show the gate ---
+    # Show the gate
     st.markdown("### 🔐 Prophetic Network Dashboard")
     st.markdown("Enter the access password to continue.")
 
-    # Use a FORM so the button click is the only trigger
     with st.form("auth_form", clear_on_submit=False):
         pwd = st.text_input(
             "Access Password",
             type="password",
-            key="auth_pwd_input",  # unique key, NOT "password"
+            key="auth_pwd_input",   # unique key — NOT "password"
         )
         submitted = st.form_submit_button("Enter")
 
     if submitted:
         if pwd == expected:
             st.session_state["password_correct"] = True
-            st.rerun()  # clean rerun into authenticated state
+            st.rerun()
         else:
-            st.session_state["password_correct"] = False
             st.error("❌ Incorrect password.")
 
-    # Stop rendering the rest of the app until authenticated
     st.stop()
 
 
+# ═══════════════════════════════════════════════════════════════
+# CALL THE GATE — nothing below runs until authenticated
+# ═══════════════════════════════════════════════════════════════
+check_password()
 
-# ============================================================================
-# INITIALIZE SERVICES  ← MOVED UP, BEFORE THE DEBUG BUTTON
-# ============================================================================
+
+# ═══════════════════════════════════════════════════════════════
+# INITIALIZE SERVICES (only runs after auth)
+# ═══════════════════════════════════════════════════════════════
+INFRANODUS_API_KEY = st.secrets.get("INFRANODUS_API_KEY", "")
+if not INFRANODUS_API_KEY:
+    st.error("🔐 INFRANODUS_API_KEY missing from Streamlit secrets.")
+    st.stop()
 
 @st.cache_resource
 def init_services():
-    """Initialize API clients and cache"""
-    api_key = st.secrets["INFRANODUS_API_KEY"]
-    
-    infranodus = InfraNodusAPI(api_key)
-    mcp = MCPClient(api_key)
-    cache = DataCache()
-    visualizer = GraphVisualizer()
-    
-    return infranodus, mcp, cache, visualizer
+    return {
+        "infranodus_api": InfraNodusAPI(api_key=INFRANODUS_API_KEY),
+        "data_cache": DataCache(),
+    }
 
-infranodus_api, mcp_client, data_cache, graph_viz = init_services()
+services = init_services()
+infranodus_api = services["infranodus_api"]
+data_cache = services["data_cache"]
 
-# ============================================================================
-# DIAGNOSTIC SIDEBAR TOOLS  ← MOVED DOWN, NOW infranodus_api EXISTS
-# ============================================================================
 
-with st.sidebar:
-    with st.expander("🔧 Diagnostics", expanded=False):
-        if st.button("🔍 List my InfraNodus graphs"):
-            with st.spinner("Fetching graph list..."):
+# ═══════════════════════════════════════════════════════════════
+# SIDEBAR DIAGNOSTICS
+# ═══════════════════════════════════════════════════════════════
+with st.sidebar.expander("🛠️ Diagnostics", expanded=False):
+    if st.button("🔍 List my InfraNodus Graphs"):
+        with st.spinner("Fetching graph list..."):
+            try:
+                graphs = infranodus_api.list_graphs()
+                st.success(f"✅ Response received (type: {type(graphs).__name__})")
+                if isinstance(graphs, list):
+                    st.write(f"**Found {len(graphs)} graphs:**")
+                    for i, g in enumerate(graphs[:20]):
+                        if isinstance(g, dict):
+                            name = g.get("name") or g.get("graphName") or g.get("title") or g.get("slug") or "?"
+                            st.code(f"{i+1}. {name}")
+                            with st.expander(f"Metadata #{i+1}"):
+                                st.json(g)
+                        else:
+                            st.code(f"{i+1}. {g}")
+                elif isinstance(graphs, dict):
+                    st.json(graphs)
+                else:
+                    st.code(str(graphs)[:2000])
+            except Exception as e:
+                st.error(f"❌ {type(e).__name__}: {str(e)[:400]}")
+                st.code(traceback.format_exc())
+
+    if st.button("🧪 Test API Connection"):
+        with st.spinner("Testing raw HTTP..."):
+            try:
+                r = requests.get(
+                    "https://infranodus.com/api/v1/graphs",
+                    headers={"Authorization": f"Bearer {INFRANODUS_API_KEY}"},
+                    timeout=15,
+                )
+                st.write(f"**Status:** {r.status_code}")
+                st.write(f"**Size:** {len(r.content)} bytes")
                 try:
-                    graphs = infranodus_api.list_graphs()
-                    
-                    st.success(f"✅ Raw response type: `{type(graphs).__name__}`")
-                    
-                    if isinstance(graphs, list):
-                        st.success(f"Found **{len(graphs)}** graphs in your account:")
-                        for i, g in enumerate(graphs, 1):
-                            if isinstance(g, dict):
-                                # Try the most likely field names for graph identifier
-                                name = (g.get("name") 
-                                        or g.get("graphName") 
-                                        or g.get("title") 
-                                        or g.get("id") 
-                                        or "[no name field]")
-                                st.code(f"{i}. {name}")
-                                # Also show full metadata in expandable block
-                                with st.expander(f"Full metadata for graph {i}"):
-                                    st.json(g)
-                            else:
-                                st.code(f"{i}. {str(g)[:200]}")
-                    elif isinstance(graphs, dict):
-                        st.success("Response is a dict:")
-                        st.json(graphs)
-                    else:
-                        st.warning(f"Unexpected response type: {type(graphs).__name__}")
-                        st.code(str(graphs)[:1000])
-                        
-                except Exception as e:
-                    st.error(f"❌ {type(e).__name__}: {str(e)[:400]}")
-                    with st.expander("Full traceback"):
-                        st.code(traceback.format_exc())
-        
-        if st.button("🧪 Test API connection"):
-            with st.spinner("Testing..."):
-                try:
-                    import requests
-                    api_key = st.secrets.get("INFRANODUS_API_KEY", "")
-                    r = requests.post(
-                        "https://infranodus.com/api/v1/listGraphs",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json"
-                        },
-                        timeout=15
-                    )
-                    st.write(f"**HTTP Status:** `{r.status_code}`")
-                    st.write(f"**Response size:** `{len(r.text)}` bytes")
-                    st.write(f"**Content type:** `{r.headers.get('content-type', 'unknown')}`")
-                    st.code(r.text[:800])
-                except Exception as e:
-                    st.error(f"{type(e).__name__}: {e}")
+                    st.json(r.json())
+                except Exception:
+                    st.code(r.text[:2000])
+            except Exception as e:
+                st.error(f"❌ {type(e).__name__}: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# REST OF YOUR DASHBOARD CONTINUES BELOW
+# (keep everything else — LAYER_GRAPH_MAP, load_network_data,
+#  visualizations, metrics, etc.)
+# ═══════════════════════════════════════════════════════════════
+
 
 
 # ============================================================================
