@@ -110,7 +110,7 @@ git push -u origin main
 
 ```toml
 INFRANODUS_API_KEY = "dfghjkl"
-ACCESS_PASSWORD = "Remnant"
+ACCESS_PASSWORD = "password"
 ```
 
 4. Save
