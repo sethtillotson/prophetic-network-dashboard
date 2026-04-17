@@ -125,6 +125,20 @@ def check_password():
 if not check_password():
     st.stop()
 
+# ============ TEMPORARY: LIST ALL GRAPHS IN ACCOUNT ============
+if st.sidebar.button("🔍 Debug: List my InfraNodus graphs"):
+    with st.spinner("Fetching graph list..."):
+        try:
+            graphs = infranodus_api.list_graphs()
+            st.sidebar.success(f"Found {len(graphs)} graphs")
+            for g in graphs:
+                # InfraNodus returns graph metadata - show the name field
+                st.sidebar.code(json.dumps(g, indent=2)[:300])
+        except Exception as e:
+            st.sidebar.error(f"List failed: {e}")
+# ============ END DIAGNOSTIC ============
+
+
 # ============================================================================
 # INITIALIZE SERVICES
 # ============================================================================
@@ -208,39 +222,76 @@ with st.sidebar:
 # LOAD DATA
 # ============================================================================
 
+# Map dashboard layer selection → actual InfraNodus graph names in your account
+LAYER_GRAPH_MAP = {
+    "Layer 1": "md__meditation-g",
+    "Layer 2": "md__meditation-g",  # Layer 2 is derived from Layer 1
+    "Layer 3": "New_Test_2",
+    # Add aliases for however your layer selector is labeled:
+    "Full Network (Layer 1)": "md__meditation-g",
+    "Deep Network (Layer 2)": "md__meditation-g",
+    "Kairos Transition (Layer 3)": "New_Test_2",
+}
+
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_network_data(layer_name):
-    """Load network data from cache or API"""
+    """Load network data from InfraNodus API for the selected layer"""
     
-    # Try to load from cache first
-    cached = data_cache.get(f"network_{layer_name}")
+    # Resolve the actual graph name from the layer selection
+    graph_name = LAYER_GRAPH_MAP.get(layer_name)
+    
+    if not graph_name:
+        st.error(f"⚠️ Unknown layer: '{layer_name}'. Available: {list(LAYER_GRAPH_MAP.keys())}")
+        return None
+    
+    # Try cache first
+    cached = data_cache.get(f"network_{graph_name}")
     if cached:
         return cached
     
-    # If not in cache, fetch from API
-    with st.spinner("Loading network data from InfraNodus..."):
+    # Fetch from API
+    with st.spinner(f"Loading '{graph_name}' from InfraNodus..."):
         try:
             response = infranodus_api.get_graph_and_statements(
-                graph_name="prophetic_meditations",
+                graph_name=graph_name,
                 add_stats=True,
                 include_graph=True,
                 include_graph_summary=True,
                 gap_depth=2
             )
             
-            # Cache the response
-            data_cache.set(f"network_{layer_name}", response)
+            # Defensive check: did we actually get graph data back?
+            if not response:
+                st.error(f"⚠️ Empty response from InfraNodus for graph '{graph_name}'")
+                return None
+            
+            graph = response.get("graph") or {}
+            nodes = graph.get("nodes", [])
+            edges = graph.get("edges") or graph.get("relations") or []
+            
+            if not nodes:
+                st.warning(
+                    f"⚠️ Graph '{graph_name}' exists but has no nodes. "
+                    f"Response keys: {list(response.keys())}"
+                )
+                # Still return so user can see what came back
+            
+            # Cache it
+            data_cache.set(f"network_{graph_name}", response)
             return response
             
         except Exception as e:
-            st.error(f"Error loading data: {str(e)}")
+            st.error(f"❌ Error loading '{graph_name}': {type(e).__name__}: {str(e)}")
+            import traceback
+            with st.expander("Full error traceback"):
+                st.code(traceback.format_exc())
             return None
 
 # Load data based on selected layer
 network_data = load_network_data(layer)
 
 if not network_data:
-    st.error("⚠️ Could not load network data. Please check API connection.")
+    st.error("⚠️ Could not load network data. Please check API connection and graph names.")
     st.stop()
 
 # ============================================================================
