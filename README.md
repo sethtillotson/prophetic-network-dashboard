@@ -67,7 +67,7 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 
 # 3. Edit secrets.toml and add your API key
 # INFRANODUS_API_KEY = "your_key_here"
-# ACCESS_PASSWORD = "Remnant"
+# ACCESS_PASSWORD = "R******"
 
 # 4. Run the dashboard
 streamlit run dashboard.py
