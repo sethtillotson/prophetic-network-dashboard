@@ -92,10 +92,16 @@ Below the columns, **pulse messages** interpret the topology:
 Ranked list of the 20 most-influential concepts by betweenness centrality.
 - **Table**: exact BC values, degree, weighted degree, community
 - **Chart**: horizontal bar chart colored by community
-- **🎯 Click-to-Focus**: click any row in the table to instantly focus the
-  live InfraNodus iframe on that node. The graph will search for the node,
-  highlight it, and reveal its neighborhood. A *"Clear focus"* button
-  appears near the iframe to return to the full network view.
+- **🎯 Click-to-Focus**: click any row in the table to filter the live iframe
+  to that specific node (using InfraNodus's exact-match search). A **🔍 Open in InfraNodus**
+  button then appears above the iframe — clicking it opens a new tab with
+  the full InfraNodus UI centered on the node, with its neighborhood visible.
+
+  **Why two steps?** The embedded iframe supports text-filtering but not
+  programmatic camera-centering (InfraNodus doesn't expose that via URL).
+  The *Open in InfraNodus* button is the reliable way to see a node truly
+  centered with its surrounding graph structure. Clicking **❌ Clear focus**
+  returns the iframe to the full network view.
 
 **Reading tip**: High BC = this concept bridges multiple conversations. `@god` at BC 0.92 means 92% of the network's bridging paths go through it.
 
@@ -187,12 +193,12 @@ Export the current view as JSON for research, sharing, or debugging.
 ### Workflow 6: "What does this node see?" (Node-Neighborhood Exploration)
 1. Set resolution to **350** or **500**
 2. Go to **🔝 Top Nodes** tab
-3. **Click any row** (e.g., `@jonah`) — the live iframe refocuses on that node
-4. Scroll up and explore the neighborhood in the InfraNodus iframe:
-   - Zoom in to see its closest neighbors
-   - Use InfraNodus's native tools to trace its connections
-5. Click **❌ Clear focus** above the iframe to return to the full view
-6. Try another node and compare how each concept's "world" differs
+3. **Click any row** (e.g., `@jonah`) — iframe filters to just that node
+4. Scroll up to the iframe; click **🔍 Open in InfraNodus** (top right)
+5. A new tab opens with the full InfraNodus UI centered on your node
+6. In InfraNodus, use *zoom*, *Show Neighbors*, *Filter By* to explore
+7. Return to the dashboard, click **❌ Clear focus**, and try another node
+8. Compare how each concept's "world" differs in the InfraNodus UI
 
 ---
 
