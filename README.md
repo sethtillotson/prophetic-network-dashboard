@@ -44,8 +44,8 @@ prophetic-network-dashboard/
 
 ```toml
 # .streamlit/secrets.toml  (or configure via Streamlit Cloud UI)
-ACCESS_PASSWORD = "Remnant"
-INFRANODUS_API_KEY = "19542:288d8298ceb6d98d38fb76b692db5c696afb6874328f6d9ae89be0f60914fa6f"
+ACCESS_PASSWORD = "R*****&"
+INFRANODUS_API_KEY = "api"
 ```
 
 `INFRANODUS_API_KEY` is optional — diagnostics and the live-stats toggle
