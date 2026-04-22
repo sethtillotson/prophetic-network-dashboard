@@ -3,6 +3,5 @@ pandas>=2.2.0
 numpy>=1.26.0
 plotly>=5.22.0
 networkx>=3.3
-pillow>=10.4.0
 requests>=2.32.0
 python-dotenv>=1.0.1
