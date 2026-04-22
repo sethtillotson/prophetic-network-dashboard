@@ -261,57 +261,91 @@ if not network_data:
 
 
 # ═══════════════════════════════════════════════════════════════
-# EXTRACT GRAPH & STATS
+# EXTRACT GRAPH & STATS (handles Graphology nested format)
 # ═══════════════════════════════════════════════════════════════
-graph_obj = network_data.get("graph", {})
+def _unwrap_graph(data):
+    """Find nodes/edges anywhere in the response tree."""
+    if not isinstance(data, dict):
+        return {}
+    if 'nodes' in data and ('edges' in data or 'relations' in data):
+        return data
+    for key in ('graphologyGraph', 'graph'):
+        inner = data.get(key)
+        if isinstance(inner, dict):
+            result = _unwrap_graph(inner)
+            if result.get('nodes') is not None:
+                return result
+    return {}
+
+
+def _node_attr(node, *keys, default=None):
+    """Look in top-level then in .attributes for any of the keys."""
+    attrs = node.get('attributes', {}) or {}
+    for k in keys:
+        if k in node and node[k] is not None:
+            return node[k]
+        if k in attrs and attrs[k] is not None:
+            return attrs[k]
+    return default
+
+
+graph_obj = _unwrap_graph(network_data)
 statements = network_data.get("statements", [])
-summary = network_data.get("summary", {})
+summary = network_data.get("summary", {}) or network_data.get("graphSummary", {})
 
 nodes = graph_obj.get("nodes", [])
 edges = graph_obj.get("edges", []) or graph_obj.get("relations", [])
 
+# Diagnostic: if still empty, offer raw JSON dump
+if not nodes:
+    st.error("⚠️ No nodes found after unwrapping. Showing raw response:")
+    with st.expander("🔍 Raw API Response (debug)"):
+        st.json(network_data if isinstance(network_data, dict) else {"raw": str(network_data)[:5000]})
+    st.stop()
+
 # Calculate stats
 num_nodes = len(nodes)
 num_edges = len(edges)
-total_weight = sum(e.get("weight", 0) for e in edges)
 
-# Community count (modularity estimate)
-communities = set(n.get("cluster", 0) for n in nodes)
+def _bc(n):
+    return float(_node_attr(n, 'bc2', 'bc', 'betweenness', default=0) or 0)
+
+def _weight(item):
+    v = _node_attr(item, 'weight', default=0)
+    try: return float(v)
+    except: return 0
+
+total_weight = sum(_weight(e) for e in edges)
+communities = set(_node_attr(n, 'cluster', 'community', default=0) for n in nodes)
 num_communities = len(communities)
 
-# Sentiment (fallback to defaults if missing)
-sentiment_pos = summary.get("sentiment_positive", 49)
-sentiment_neg = summary.get("sentiment_negative", 18)
-sentiment_neu = summary.get("sentiment_neutral", 33)
+# Sentiment
+sentiment_pos = summary.get("sentiment_positive", summary.get("positive", 49))
+sentiment_neg = summary.get("sentiment_negative", summary.get("negative", 18))
+sentiment_neu = summary.get("sentiment_neutral", summary.get("neutral", 33))
 
 
 # ═══════════════════════════════════════════════════════════════
-# TOP METRICS ROW
+# METRICS ROW
 # ═══════════════════════════════════════════════════════════════
 col1, col2, col3, col4, col5 = st.columns(5)
-
-with col1:
-    st.metric("Nodes", f"{num_nodes:,}")
-with col2:
-    st.metric("Edges", f"{num_edges:,}")
-with col3:
-    st.metric("Communities", num_communities)
-with col4:
-    st.metric("Total Weight", f"{total_weight:,}")
+with col1: st.metric("Nodes", f"{num_nodes:,}")
+with col2: st.metric("Edges", f"{num_edges:,}")
+with col3: st.metric("Communities", num_communities)
+with col4: st.metric("Total Weight", f"{int(total_weight):,}")
 with col5:
-    modularity = 0.22 if selected_layer == "Layer 1 (Full Network)" else 0.33
+    modularity = 0.22 if "Layer 1" in selected_layer else 0.33
     st.metric("Modularity", f"{modularity:.2f}")
 
 
 # ═══════════════════════════════════════════════════════════════
-# NETWORK GRAPH VISUALIZATION
+# NETWORK GRAPH (Top 150 nodes)
 # ═══════════════════════════════════════════════════════════════
 st.markdown("### 🌐 Network Graph (Top 150 Nodes)")
 
 if nodes and edges:
     try:
-        # Pass the unwrapped graph object (with flat nodes/edges) to the visualizer
-        fig = graph_viz.create_network_graph(graph_obj, top_n=150)
+        fig = graph_viz.create_network_graph(network_data, top_n=150)
         st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.error(f"❌ Error rendering graph: {e}")
@@ -321,36 +355,26 @@ else:
 
 
 # ═══════════════════════════════════════════════════════════════
-# TOP NODES TABLE
+# TOP 20 NODES TABLE
 # ═══════════════════════════════════════════════════════════════
 st.markdown("### 📊 Top 20 Influential Nodes")
 
 if nodes:
-    def _bc(n):
-        for k in ('bc2', 'bc', 'betweenness', 'betweenness_centrality'):
-            if n.get(k) is not None:
-                try: return float(n[k])
-                except: pass
-        return 0.0
-
     nodes_sorted = sorted(nodes, key=_bc, reverse=True)[:20]
-
     table_data = []
     for rank, node in enumerate(nodes_sorted, 1):
         table_data.append({
             "Rank": rank,
-            "Node": node.get("name") or node.get("label") or node.get("id") or "?",
+            "Node": _node_attr(node, 'label', 'name', 'key', 'id', default='?'),
             "Betweenness": f"{_bc(node):.4f}",
-            "Degree": node.get("degree", 0),
-            "Weight": node.get("weight", 0),
-            "Cluster": node.get("cluster", node.get("community", "—")),
+            "Degree": int(_node_attr(node, 'degree', default=0) or 0),
+            "Weight": int(_node_attr(node, 'weight', default=0) or 0),
+            "Cluster": _node_attr(node, 'cluster', 'community', default='—'),
         })
-
     df = pd.DataFrame(table_data)
     st.dataframe(df, use_container_width=True, hide_index=True)
 else:
     st.info("No node data available.")
-
 
 
 # ═══════════════════════════════════════════════════════════════
