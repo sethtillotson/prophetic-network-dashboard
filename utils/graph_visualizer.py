@@ -1,243 +1,193 @@
 """
-Network Graph Visualizer
-Handles InfraNodus Graphology JSON format (nested attributes)
+GraphVisualizer — chart utilities for the hybrid dashboard.
+
+The primary graph view is now the live InfraNodus iframe embed, so this
+module focuses on the supporting Plotly charts that accompany it:
+
+    • community_pie              — community-share donut
+    • betweenness_bar            — BC-ranked horizontal bar chart
+    • sentiment_chart            — simple sentiment distribution
+    • create_network_graph       — optional fallback static preview,
+                                    handles the InfraNodus JSON format
+                                    (bc, community, x, y, weighedDegree)
 """
 
-import plotly.graph_objects as go
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
 import networkx as nx
-from typing import Dict, List, Optional, Any
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
 
 
 class GraphVisualizer:
-    def __init__(self):
-        self.color_scale = [
-            '#667eea', '#764ba2', '#f093fb', '#4facfe',
-            '#00f2fe', '#43e97b', '#38f9d7', '#fa709a',
-            '#fee140', '#30cfd0', '#a8edea',
-        ]
+    # Distinct palette for up to 12 communities
+    COLORS = [
+        "#FF6B6B", "#4ECDC4", "#FFE66D", "#95E1D3", "#A8E6CF",
+        "#FFD3B6", "#FFAAA5", "#FF8B94", "#B28DFF", "#6B8CFF",
+        "#FF9F68", "#7FDBB6",
+    ]
 
-    # ─── Field extractors (handle flat OR attributes-nested) ───
+    # ──────────────────────────────────────────────────────────────────────
+    #  Unwrap helper — handles a few InfraNodus response shapes
+    # ──────────────────────────────────────────────────────────────────────
     @staticmethod
-    def _get_attr(node_or_edge: Dict, *keys, default=None):
-        """Try top-level then inside .attributes for any of the given keys."""
-        attrs = node_or_edge.get('attributes', {}) or {}
-        for k in keys:
-            if k in node_or_edge and node_or_edge[k] is not None:
-                return node_or_edge[k]
-            if k in attrs and attrs[k] is not None:
-                return attrs[k]
-        return default
-
-    @classmethod
-    def _node_id(cls, node: Dict) -> str:
-        """Graphology uses 'key'; InfraNodus may also use 'name' or 'id'."""
-        return str(cls._get_attr(node, 'key', 'id', 'name', 'uid', default=''))
-
-    @classmethod
-    def _node_label(cls, node: Dict) -> str:
-        return str(cls._get_attr(node, 'label', 'name', 'key', 'id', default='?'))
-
-    @classmethod
-    def _node_bc(cls, node: Dict) -> float:
-        v = cls._get_attr(node, 'bc2', 'bc', 'betweenness', 'betweenness_centrality', default=0)
-        try: return float(v)
-        except (TypeError, ValueError): return 0.0
-
-    @classmethod
-    def _node_cluster(cls, node: Dict) -> int:
-        v = cls._get_attr(node, 'cluster', 'community', 'group', 'clusterID', default=0)
-        try: return int(v)
-        except (TypeError, ValueError): return 0
-
-    @classmethod
-    def _node_degree(cls, node: Dict) -> int:
-        v = cls._get_attr(node, 'degree', default=0)
-        try: return int(v)
-        except (TypeError, ValueError): return 0
-
-    @classmethod
-    def _node_weight(cls, node: Dict) -> int:
-        v = cls._get_attr(node, 'weight', 'nodeWeight', default=0)
-        try: return int(v)
-        except (TypeError, ValueError): return 0
-
-    @classmethod
-    def _edge_endpoints(cls, edge: Dict):
-        src = edge.get('source') or edge.get('from') or edge.get('src')
-        tgt = edge.get('target') or edge.get('to') or edge.get('dst')
-        return src, tgt
-
-    @classmethod
-    def _edge_weight(cls, edge: Dict) -> float:
-        v = cls._get_attr(edge, 'weight', default=1)
-        try: return float(v)
-        except (TypeError, ValueError): return 1.0
-
-    # ─── Main unwrap: find nodes/edges ANYWHERE in response ───
-    @staticmethod
-    def _unwrap_graph(data: Dict) -> Dict:
-        """
-        Find the level that contains nodes & edges.
-        Handles:  {graph:{graphologyGraph:{nodes,edges}}}
-                  {graph:{nodes,edges}}
-                  {nodes,edges}
-                  {graphologyGraph:{nodes,edges}}
-        """
+    def _unwrap(data: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(data, dict):
-            return {}
-        # Direct hit
-        if 'nodes' in data and ('edges' in data or 'relations' in data or 'links' in data):
+            return {"nodes": [], "edges": []}
+        if "nodes" in data and "edges" in data:
             return data
-        # One level deep
-        for key in ('graphologyGraph', 'graph'):
+        for key in ("graph", "graphologyGraph"):
             inner = data.get(key)
-            if isinstance(inner, dict):
-                unwrapped = GraphVisualizer._unwrap_graph(inner)
-                if unwrapped.get('nodes') is not None:
-                    return unwrapped
-        return {}
+            if isinstance(inner, dict) and "nodes" in inner:
+                return inner
+        # nested graph.graphologyGraph
+        g = data.get("graph")
+        if isinstance(g, dict):
+            gg = g.get("graphologyGraph")
+            if isinstance(gg, dict) and "nodes" in gg:
+                return gg
+        return {"nodes": [], "edges": []}
 
+    # ──────────────────────────────────────────────────────────────────────
+    #  Optional static preview (kept for compatibility / offline use)
+    # ──────────────────────────────────────────────────────────────────────
     def create_network_graph(
         self,
         network_data: Dict[str, Any],
         top_n: int = 150,
         highlight_node: Optional[str] = None,
     ) -> go.Figure:
-        """Create interactive network graph. Accepts any InfraNodus response shape."""
-        unwrapped = self._unwrap_graph(network_data)
-        all_nodes = unwrapped.get('nodes') or []
-        all_edges = (
-            unwrapped.get('edges')
-            or unwrapped.get('relations')
-            or unwrapped.get('links')
-            or []
-        )
+        inner = self._unwrap(network_data)
+        nodes = inner.get("nodes", []) or []
+        edges = inner.get("edges", []) or []
 
-        # Sort by BC DESC, take top_n
-        sorted_nodes = sorted(all_nodes, key=self._node_bc, reverse=True)[:top_n]
-        top_ids = {self._node_id(n) for n in sorted_nodes if self._node_id(n)}
-
-        G = nx.Graph()
-        for node in sorted_nodes:
-            nid = self._node_id(node)
-            if not nid:
-                continue
-            G.add_node(
-                nid,
-                label=self._node_label(node),
-                bc=self._node_bc(node),
-                degree=self._node_degree(node),
-                weight=self._node_weight(node),
-                cluster=self._node_cluster(node),
-            )
-
-        for edge in all_edges:
-            src, tgt = self._edge_endpoints(edge)
-            if src in top_ids and tgt in top_ids:
-                G.add_edge(src, tgt, weight=self._edge_weight(edge))
-
-        # Empty graph fallback
-        if G.number_of_nodes() == 0:
+        if not nodes:
             fig = go.Figure()
             fig.add_annotation(
-                text=("No nodes found in response.<br>"
-                      "Check browser console or use the Raw JSON dump below."),
-                xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
-                font=dict(size=16, color="#fa709a"),
+                text="No graph data available", x=0.5, y=0.5,
+                xref="paper", yref="paper", showarrow=False,
+                font=dict(size=16, color="#888"),
             )
-            fig.update_layout(
-                height=500, plot_bgcolor='#0e1117', paper_bgcolor='#0e1117',
-                font=dict(color='#fafafa'),
-            )
+            fig.update_layout(height=500, paper_bgcolor="rgba(0,0,0,0)",
+                              plot_bgcolor="rgba(0,0,0,0)")
             return fig
 
-        # Layout
-        try:
-            pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
-        except Exception:
-            pos = nx.circular_layout(G)
+        # rank by bc, take top-N
+        nodes_sorted = sorted(nodes, key=lambda n: -float(n.get("bc", 0)))[:top_n]
+        node_ids = {n.get("id") for n in nodes_sorted}
 
-        # Edge trace
+        G = nx.Graph()
+        for n in nodes_sorted:
+            G.add_node(
+                n["id"],
+                label=n.get("label", n.get("id", "?")),
+                bc=float(n.get("bc", 0)),
+                community=int(n.get("community", 0)),
+                degree=int(n.get("degree", 0)),
+                x=float(n.get("x", 0)),
+                y=float(n.get("y", 0)),
+            )
+        for e in edges:
+            s, t = e.get("source"), e.get("target")
+            if s in node_ids and t in node_ids:
+                G.add_edge(s, t, weight=float(e.get("weight", 1)))
+
+        # prefer InfraNodus-supplied x,y; fall back to spring layout
+        pos = {n: (G.nodes[n]["x"], G.nodes[n]["y"]) for n in G.nodes}
+        if all(p == (0.0, 0.0) for p in pos.values()):
+            pos = nx.spring_layout(G, k=0.8, seed=42)
+
+        # edges
         edge_x, edge_y = [], []
-        for u, v, _ in G.edges(data=True):
-            x0, y0 = pos[u]; x1, y1 = pos[v]
-            edge_x.extend([x0, x1, None])
-            edge_y.extend([y0, y1, None])
+        for s, t in G.edges():
+            edge_x += [pos[s][0], pos[t][0], None]
+            edge_y += [pos[s][1], pos[t][1], None]
         edge_trace = go.Scatter(
-            x=edge_x, y=edge_y, mode='lines',
-            line=dict(width=0.8, color='rgba(150,150,150,0.35)'),
-            hoverinfo='none', showlegend=False,
+            x=edge_x, y=edge_y,
+            line=dict(width=0.6, color="rgba(150,150,150,0.35)"),
+            hoverinfo="none", mode="lines",
         )
 
-        # Node trace
-        node_x, node_y, node_text, node_size, node_color, node_hover = [], [], [], [], [], []
-        for nid, d in G.nodes(data=True):
-            x, y = pos[nid]
-            node_x.append(x); node_y.append(y)
-            label, bc, deg, wt, cl = d['label'], d['bc'], d['degree'], d['weight'], d['cluster']
-            node_text.append(label)
-            node_size.append(8 + bc * 80)
-            node_color.append(self.color_scale[cl % len(self.color_scale)])
-            node_hover.append(
-                f"<b>{label}</b><br>BC: {bc:.4f}<br>Degree: {deg}<br>"
-                f"Weight: {wt:,}<br>Cluster: {cl}"
-            )
+        # nodes
+        node_x, node_y, labels, sizes, colors = [], [], [], [], []
+        for n, d in G.nodes(data=True):
+            node_x.append(pos[n][0])
+            node_y.append(pos[n][1])
+            labels.append(f"{d['label']}<br>BC: {d['bc']:.3f}<br>Degree: {d['degree']}")
+            sizes.append(8 + d["bc"] * 80)
+            colors.append(self.COLORS[d["community"] % len(self.COLORS)])
 
         node_trace = go.Scatter(
-            x=node_x, y=node_y, mode='markers+text',
-            text=node_text, textposition='top center',
-            textfont=dict(size=9, color='#ffffff'),
-            hovertext=node_hover, hoverinfo='text',
+            x=node_x, y=node_y,
+            mode="markers+text",
+            text=[G.nodes[n]["label"] for n in G.nodes],
+            hovertext=labels,
+            hoverinfo="text",
+            textposition="top center",
+            textfont=dict(size=9, color="#eee"),
             marker=dict(
-                size=node_size, color=node_color,
-                line=dict(width=1.2, color='white'), opacity=0.92,
+                size=sizes, color=colors,
+                line=dict(width=1, color="rgba(255,255,255,0.4)"),
             ),
-            showlegend=False,
         )
 
         fig = go.Figure(data=[edge_trace, node_trace])
         fig.update_layout(
-            title=dict(text=f"Knowledge Graph (Top {G.number_of_nodes()} Nodes)",
-                       font=dict(size=18, color='#fafafa')),
-            showlegend=False, hovermode='closest',
-            margin=dict(b=10, l=10, r=10, t=50),
+            title=f"Knowledge Graph (Top {len(G.nodes)} Nodes)",
+            showlegend=False,
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            plot_bgcolor='#0e1117', paper_bgcolor='#0e1117',
-            font=dict(color='#fafafa'), height=700,
+            height=620,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=0, t=40, b=0),
         )
         return fig
 
-    # ─── Unchanged helpers ───
-    def create_community_timeline(self, timeline_data):
-        fig = go.Figure()
-        clusters = {}
-        for r in timeline_data:
-            c = r.get('cluster', 'Unknown')
-            clusters.setdefault(c, {'dates': [], 'influence': []})
-            clusters[c]['dates'].append(r['date'])
-            clusters[c]['influence'].append(r['influence'])
-        for i, (c, d) in enumerate(clusters.items()):
-            fig.add_trace(go.Scatter(
-                x=d['dates'], y=d['influence'], name=str(c),
-                stackgroup='one', mode='lines', line=dict(width=0),
-                fillcolor=self.color_scale[i % len(self.color_scale)],
-            ))
-        fig.update_layout(title="Community Evolution Over Time",
-                          xaxis_title="Date", yaxis_title="% Influence",
-                          hovermode='x unified', height=400)
+    # ──────────────────────────────────────────────────────────────────────
+    #  Accessory charts
+    # ──────────────────────────────────────────────────────────────────────
+    def community_pie(self, communities: Dict[int, int]) -> go.Figure:
+        fig = go.Figure(data=[go.Pie(
+            labels=[f"Cluster {c}" for c in communities.keys()],
+            values=list(communities.values()),
+            hole=0.4,
+            marker=dict(colors=[self.COLORS[c % len(self.COLORS)] for c in communities.keys()]),
+        )])
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=0, t=20, b=0),
+        )
         return fig
 
-    def create_sentiment_chart(self, sentiment_data):
-        dates = [d['date'] for d in sentiment_data]
-        fig = go.Figure()
-        for key, color in [('positive','#28a745'), ('negative','#dc3545'), ('neutral','#6c757d')]:
-            fig.add_trace(go.Scatter(
-                x=dates, y=[d[key] for d in sentiment_data],
-                name=key.capitalize(),
-                line=dict(color=color, width=3), mode='lines+markers',
-            ))
-        fig.update_layout(title="Sentiment Trend Analysis",
-                          xaxis_title="Date", yaxis_title="Percentage",
-                          hovermode='x unified', height=400)
+    def betweenness_bar(self, nodes_df, top: int = 20) -> go.Figure:
+        df = nodes_df.head(top).sort_values("Betweenness")
+        fig = px.bar(
+            df, x="Betweenness", y="Node",
+            orientation="h", color="Community",
+            color_continuous_scale="Viridis",
+        )
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=0, t=10, b=0),
+        )
+        return fig
+
+    def sentiment_chart(self, sentiment: Dict[str, float]) -> go.Figure:
+        labels = list(sentiment.keys())
+        vals = [float(v) for v in sentiment.values()]
+        fig = go.Figure(data=[go.Bar(
+            x=labels, y=vals,
+            marker=dict(color=["#4ECDC4", "#FF6B6B", "#95A5A6"][: len(labels)]),
+        )])
+        fig.update_layout(
+            title="Sentiment Distribution",
+            yaxis_title="%",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
         return fig
