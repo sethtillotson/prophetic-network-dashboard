@@ -1,18 +1,33 @@
 """
-InfraNodus Direct API Client
-Docs: https://support.noduslabs.com/hc/en-us/articles/13605983537692
+InfraNodus API client — lean, stats-focused.
+
+The hybrid dashboard renders the live graph via iframe, so this client only
+needs to support:
+    • list_graphs()            — sidebar diagnostics
+    • get_graph_summary()      — fast stats refresh (no graph body, no statements)
+
+Both are implemented as POST requests against the official v1 endpoints with
+a 120-second timeout, retries, and robust error messages.
+
+Reference:
+    https://support.noduslabs.com/hc/en-us/articles/13605983537692
+    https://infranodus.com/api/docs
 """
-import requests
+
+from __future__ import annotations
+
 import time
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
+
+import requests
 
 
 class InfraNodusAPI:
     BASE_URL = "https://infranodus.com/api/v1"
 
-    def __init__(self, api_key: str, timeout: int = 120):  # ← 120s default
+    def __init__(self, api_key: str, timeout: int = 120):
         if not api_key:
-            raise ValueError("InfraNodus API key is required")
+            raise ValueError("InfraNodus API key is required.")
         self.api_key = api_key
         self.timeout = timeout
         self.session = requests.Session()
@@ -20,91 +35,100 @@ class InfraNodusAPI:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": "ProphetticNetworkDashboard/1.0",
         })
 
+    # ──────────────────────────────────────────────────────────────────────
+    #  low-level helper with retry + back-off
+    # ──────────────────────────────────────────────────────────────────────
     def _post(
         self,
         path: str,
-        payload: Dict[str, Any],
-        params: Optional[Dict] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
         retries: int = 2,
-    ) -> Dict:
-        """
-        Internal POST with retry logic for large graph requests.
-        
-        Args:
-            retries: Number of retry attempts on timeout (default 2)
-        """
+    ) -> Any:
         url = f"{self.BASE_URL}{path}"
-        last_error = None
+        last_exc: Optional[Exception] = None
 
         for attempt in range(retries + 1):
             try:
                 r = self.session.post(
                     url,
-                    json=payload,
-                    params=params,
-                    timeout=self.timeout
+                    json=payload or {},
+                    params=params or {},
+                    timeout=self.timeout,
                 )
-                r.raise_for_status()
-                return r.json()
-
-            except requests.Timeout as e:
-                last_error = e
-                if attempt < retries:
-                    wait = 2 ** attempt  # Exponential backoff: 1s, 2s
-                    time.sleep(wait)
-                    continue
-                else:
-                    raise Exception(
-                        f"InfraNodus API timeout after {self.timeout}s "
-                        f"(tried {retries + 1} times). "
-                        f"Graph may be too large or server is slow."
+                if r.status_code >= 400:
+                    # surface the server message whenever possible
+                    try:
+                        body = r.json()
+                    except ValueError:
+                        body = r.text
+                    raise RuntimeError(
+                        f"InfraNodus API {r.status_code} on {path}: {body}"
                     )
-
-            except requests.HTTPError as e:
-                body = e.response.text[:500] if e.response is not None else ""
-                raise Exception(
-                    f"InfraNodus API error {e.response.status_code}: {body}"
+                # 2xx
+                if not r.content:
+                    return None
+                try:
+                    return r.json()
+                except ValueError:
+                    return r.text
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_exc = exc
+                if attempt < retries:
+                    time.sleep(2 ** attempt)  # 1s, 2s
+                    continue
+                raise RuntimeError(
+                    f"InfraNodus API timeout on {path} after {retries + 1} attempts: {exc}"
                 )
+            except Exception as exc:
+                last_exc = exc
+                raise
 
-            except requests.RequestException as e:
-                raise Exception(f"InfraNodus API connection error: {e}")
+        if last_exc:  # pragma: no cover
+            raise last_exc
 
-        # Should never reach here, but satisfy type checker
-        raise Exception(f"InfraNodus API failed after retries: {last_error}")
+    # ──────────────────────────────────────────────────────────────────────
+    #  Public methods
+    # ──────────────────────────────────────────────────────────────────────
+    def list_graphs(self, limit: int = 50) -> List[Dict[str, Any]] | Dict[str, Any]:
+        """POST /listGraphs — retrieve the user's graphs."""
+        data = self._post("/listGraphs", {"limit": limit})
+        # some endpoints wrap the list inside {"graphs": [...]}
+        if isinstance(data, dict) and "graphs" in data:
+            return data["graphs"]
+        return data
 
-    def list_graphs(self, limit: int = 50) -> List[Dict]:
-        """List all graphs for the authenticated user."""
-        result = self._post("/listGraphs", payload={"limit": limit}, retries=1)
-        if isinstance(result, dict):
-            return result.get("graphs") or result.get("data") or [result]
-        return result if isinstance(result, list) else []
+    def get_graph_summary(self, name: str) -> Dict[str, Any]:
+        """POST /graphAndStatements with all heavy payloads disabled.
 
-    def get_graph(
-        self,
-        name: str,
-        include_graph: bool = True,
-        include_statements: bool = False,  # ← Set to False by default (faster)
-        include_stats: bool = True,
-    ) -> Dict:
-        """
-        Retrieve an existing graph by name.
-        
-        Args:
-            name: Graph context name (e.g., 'layer_1', 'layer_3')
-            include_graph: Include nodes/edges (required for visualization)
-            include_statements: Include full text statements (SLOW — disable for speed)
-            include_stats: Include summary statistics
-        
-        Returns:
-            Dict with keys: graph, statements, summary
+        Returns only the summary metadata (top nodes, clusters, gaps,
+        modularity, diversity stats). Used for an *optional* live refresh —
+        the cached JSON already contains all this information.
         """
         payload = {"name": name}
         params = {
-            "includeGraph": str(include_graph).lower(),
-            "includeStatements": str(include_statements).lower(),
-            "includeGraphSummary": str(include_stats).lower(),
+            "includeGraph": "false",
+            "includeStatements": "false",
+            "includeGraphSummary": "true",
         }
-        # Graph requests may timeout — allow 2 retries with 120s each
-        return self._post("/graphAndStatements", payload=payload, params=params, retries=2)
+        result = self._post("/graphAndStatements", payload, params, retries=2)
+        if isinstance(result, dict):
+            return result.get("graph") or result
+        return {}
+
+    def get_graph_full(self, name: str) -> Dict[str, Any]:
+        """POST /graphAndStatements with the full graph body.
+
+        Kept for parity with the old client. Prefer the cached JSON file —
+        this call can exceed 60 seconds for Layer 1.
+        """
+        payload = {"name": name}
+        params = {
+            "includeGraph": "true",
+            "includeStatements": "false",
+            "includeGraphSummary": "true",
+        }
+        return self._post("/graphAndStatements", payload, params, retries=2) or {}
