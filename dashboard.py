@@ -1,26 +1,25 @@
 """
-PROPHETIC NETWORK DASHBOARD — Hybrid Layer 1 Edition
-=====================================================
+PROPHETIC NETWORK DASHBOARD — Hybrid Multi-Resolution Edition
+==============================================================
 Living Topology of Transformation — Interactive Knowledge Graph Intelligence
 Author: Seth Tillotson
 
-Architecture (Hybrid):
- ┌─────────────────────────────────────────────────────────────┐
- │  1. EMBED  → Live InfraNodus iframe (graph visualization)   │
- │  2. CACHE  → Local layer_1.json (instant stats & tables)    │
- │  3. API    → InfraNodus REST (optional refresh of stats)    │
- └─────────────────────────────────────────────────────────────┘
+Architecture (Hybrid Multi-Resolution):
+ ┌─────────────────────────────────────────────────────────────────┐
+ │  1. EMBED   → Live InfraNodus iframe (synced to slider)         │
+ │  2. CACHE   → 4 resolutions: 150/250/350/500 node JSONs         │
+ │  3. SLIDER  → Drives BOTH iframe AND all dashboard metrics      │
+ │  4. API     → InfraNodus REST (optional stats refresh only)     │
+ └─────────────────────────────────────────────────────────────────┘
 
-No more API-timeout failures. The iframe renders the live graph directly
-from InfraNodus; all statistics, tables, and charts come from the
-cached JSON (data/layer_1.json) so the dashboard loads instantly.
+Every tab, metric, and chart now updates in lockstep with the node slider.
 """
 
 from __future__ import annotations
 
 import json
 import traceback
-from datetime import datetime, date, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -45,7 +44,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  AUTHENTICATION  (bullet-proof, form-based, session-persistent)
+#  AUTHENTICATION  (form-based, session-persistent)
 # ─────────────────────────────────────────────────────────────────────────────
 def check_password() -> bool:
     """Gate the app behind a password stored in Streamlit secrets."""
@@ -79,19 +78,27 @@ def check_password() -> bool:
 check_password()
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  CONFIGURATION — Layer 1 only (hybrid test build)
+#  CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 LAYER_CONFIG = {
     "Layer 1 (Full Network)": {
         "graph_name": "layer_1",
         "embed_context": "seth_tillotson/layer_1",
-        "json_path": "data/layer_1.json",
-        "description": "Complete prophetic network — 150 focus nodes, 6 communities, modularity 0.22",
+        "description": "Complete prophetic network — multi-resolution cached topology",
+        "resolutions": {
+            150: "data/layer_1_150.json",
+            250: "data/layer_1_250.json",
+            350: "data/layer_1_350.json",
+            500: "data/layer_1_500.json",
+        },
     },
 }
 
+RESOLUTION_OPTIONS = [150, 250, 350, 500]
+
+
 def build_embed_params(max_nodes: int = 150) -> str:
-    """Build the InfraNodus iframe query string with a configurable node cap."""
+    """Build the InfraNodus iframe query string with configurable node cap."""
     return (
         "background=dark"
         "&show_analytics=1"
@@ -109,8 +116,23 @@ def build_embed_params(max_nodes: int = 150) -> str:
         "&link_hashtags=1"
     )
 
+
+# Semantic names for communities — auto-derived but with curated overrides
+# If a cluster's top-2 concepts match a known pattern, use the curated name.
+CURATED_CLUSTER_NAMES = {
+    frozenset(["@god", "@jonah"]): "Divine-Consciousness Axis",
+    frozenset(["@god", "@mind"]): "Divine-Consciousness Axis",
+    frozenset(["@jesus", "@wilderness"]): "Incarnate-Process Axis",
+    frozenset(["@jesus", "@leaven"]): "Incarnate-Process Axis",
+    frozenset(["@revelation", "spirit"]): "Revelation-Spirit Axis",
+    frozenset(["@revelation", "@christ"]): "Revelation-Spirit Axis",
+    frozenset(["@prayer", "@scripture"]): "Prayer-Scripture Axis",
+    frozenset(["@word", "@the_prophet"]): "Word-Prophet Axis",
+    frozenset(["@word", "living"]): "Word-Life Axis",
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
-#  SERVICES  (cached resources — only one per session)
+#  SERVICES  (cached resources — one instance per session)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def init_services():
@@ -124,30 +146,49 @@ def init_services():
 infranodus_api, data_cache, graph_viz = init_services()
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  CACHED DATA LOADERS
+#  CACHED DATA LOADERS — keyed by resolution
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner="Loading cached network data…")
 def load_layer_json(json_path: str) -> dict | None:
-    """Load the pre-exported InfraNodus JSON for instant dashboard rendering."""
+    """Load a pre-exported InfraNodus JSON for instant dashboard rendering."""
     try:
         return data_cache.load_json(json_path)
     except FileNotFoundError:
-        st.error(f"📁 Cached graph file not found: `{json_path}`")
         return None
     except Exception as exc:
         st.error(f"Failed to load `{json_path}`: {exc}")
         return None
 
 
+def resolve_json_path(layer_cfg: dict, requested_nodes: int) -> tuple[str | None, int, bool]:
+    """
+    Resolve which JSON file to load based on requested node count.
+    Returns (path, actual_resolution_loaded, exact_match_bool).
+    Falls back to the nearest available resolution if the exact one is missing.
+    """
+    resolutions = layer_cfg.get("resolutions", {})
+    available = sorted(r for r, p in resolutions.items() if Path(p).exists())
+
+    if not available:
+        return None, 0, False
+
+    if requested_nodes in resolutions and Path(resolutions[requested_nodes]).exists():
+        return resolutions[requested_nodes], requested_nodes, True
+
+    # Fall back: nearest available (prefer smaller → faster load)
+    nearest = min(available, key=lambda r: (abs(r - requested_nodes), r))
+    return resolutions[nearest], nearest, False
+
+
 @st.cache_data(ttl=600, show_spinner="Fetching live API stats…")
 def load_live_summary(graph_name: str) -> dict | None:
-    """OPTIONAL: Fetch lightweight stats from the API (summary only, no graph body)."""
+    """Optional: Fetch lightweight summary stats from the API."""
     if infranodus_api is None:
         return None
     try:
         return infranodus_api.get_graph_summary(graph_name)
     except Exception as exc:
-        st.warning(f"Live summary unavailable for `{graph_name}`: {exc}")
+        st.warning(f"Live summary unavailable: {exc}")
         return None
 
 
@@ -173,6 +214,12 @@ def compute_metrics(net: dict) -> dict:
         "modularity": round(float(modularity), 3),
         "diversity_score": diversity.get("diversity_score", "n/a"),
         "modularity_score": diversity.get("modularity_score", "n/a"),
+        "top_nodes_entropy": diversity.get("top_nodes_entropy", 0),
+        "ratio_top_nodes": diversity.get("ratio_of_top_nodes_influence_by_betweenness", 0),
+        "ratio_top_clusters": diversity.get("ratio_of_top_cluster_influence_by_betweenness", 0),
+        "fair_cluster_influence": diversity.get("fair_influence_by_cluster", 0),
+        "too_focused_on_top_nodes": diversity.get("too_focused_on_top_nodes", False),
+        "too_focused_on_top_clusters": diversity.get("too_focused_on_top_clusters", False),
         "top_nodes": meta.get("top_nodes", []),
         "top_influential": meta.get("top_influential_nodes", []),
         "top_clusters": meta.get("top_clusters", []),
@@ -180,59 +227,129 @@ def compute_metrics(net: dict) -> dict:
     }
 
 
-def top_nodes_dataframe(net: dict, limit: int = 20) -> pd.DataFrame:
-    """Sort nodes by betweenness centrality and return a display-ready DataFrame."""
-    nodes = net.get("nodes", []) or []
-    rows = []
+def _is_concept_token(label: str) -> bool:
+    """Return True for real concepts; False for document-filename tokens (`[[...]]`)."""
+    if not label:
+        return False
+    # Filter out document-style labels that are noisy filenames
+    if label.startswith("[[") and label.endswith("]]"):
+        return False
+    return True
+
+
+def _clean_concept_label(label: str) -> str:
+    """Strip @ and underscores for display in derived names."""
+    return (label.replace("@", "")
+                 .replace("_", " ")
+                 .replace("[[", "")
+                 .replace("]]", "")
+                 .strip())
+
+
+def derive_community_names(network: dict) -> dict[int, dict]:
+    """
+    Build a rich summary of each community with auto-derived semantic names.
+    Returns {community_id: {name, top_concepts, size, weight, color_hint}}.
+
+    Algorithm:
+      1. Sort members by betweenness (then weighted degree).
+      2. Preserve the full top-concepts list (including document tokens) for display.
+      3. For the semantic NAME, use only real concept tokens (not `[[filenames]]`).
+      4. Match against curated names first, then auto-derive from top-2 concepts.
+    """
+    nodes = network.get("nodes", []) or []
+    buckets: dict[int, list[dict]] = {}
     for n in nodes:
-        rows.append({
-            "Node": n.get("label", n.get("id", "?")),
-            "Betweenness": round(float(n.get("bc", 0.0)), 4),
-            "Degree": int(n.get("degree", 0)),
-            "Weighted Degree": int(n.get("weighedDegree", 0)),
-            "Community": int(n.get("community", -1)),
-        })
+        buckets.setdefault(int(n.get("community", -1)), []).append(n)
+
+    result = {}
+    for cid, members in buckets.items():
+        members.sort(
+            key=lambda x: (-float(x.get("bc", 0)), -float(x.get("weighedDegree", 0)))
+        )
+        # Full list for display (may include `[[filenames]]`)
+        top_labels_full = [m.get("label", "?") for m in members[:6]]
+        # Concept-only list for naming (excludes `[[filenames]]`)
+        concept_members = [m for m in members if _is_concept_token(m.get("label", ""))]
+        concept_labels = [m.get("label", "?") for m in concept_members[:6]]
+
+        # Try curated names first (check top-5 concepts for any match)
+        curated = None
+        for key, val in CURATED_CLUSTER_NAMES.items():
+            if key.issubset(set(concept_labels[:5])):
+                curated = val
+                break
+
+        # Fall back to auto-derived name from top-2 real concepts
+        if not curated:
+            clean = [_clean_concept_label(t) for t in concept_labels[:2]]
+            clean = [c for c in clean if c]
+            if len(clean) >= 2:
+                curated = f"{clean[0].title()}-{clean[1].title()} Axis"
+            elif len(clean) == 1:
+                curated = f"{clean[0].title()} Axis"
+            else:
+                curated = f"Cluster {cid}"
+
+        # Display leader = first *concept* (not document filename) if possible
+        display_leader = concept_labels[0] if concept_labels else (top_labels_full[0] if top_labels_full else "?")
+
+        total_weight = sum(int(m.get("weighedDegree", 0)) for m in members)
+        total_nodes = len(members)
+
+        result[cid] = {
+            "name": curated,
+            "short_id": cid,
+            "top_concepts": top_labels_full[:6],  # full list for display
+            "top_concepts_clean": concept_labels[:6],  # filtered list
+            "size": total_nodes,
+            "weight": total_weight,
+            "bc_leader": display_leader,
+            "bc_leader_score": round(float(concept_members[0].get("bc", 0)), 4) if concept_members else (round(float(members[0].get("bc", 0)), 4) if members else 0),
+        }
+    return result
+
+
+def top_nodes_dataframe(net: dict, limit: int = 20) -> pd.DataFrame:
+    nodes = net.get("nodes", []) or []
+    rows = [{
+        "Node": n.get("label", n.get("id", "?")),
+        "Betweenness": round(float(n.get("bc", 0.0)), 4),
+        "Degree": int(n.get("degree", 0)),
+        "Weighted Degree": int(n.get("weighedDegree", 0)),
+        "Community": int(n.get("community", -1)),
+    } for n in nodes]
     df = pd.DataFrame(rows).sort_values("Betweenness", ascending=False).head(limit)
     df.insert(0, "Rank", range(1, len(df) + 1))
     return df
 
 
 def top_edges_dataframe(net: dict, limit: int = 20) -> pd.DataFrame:
-    """Top edges by weight — the strongest conceptual bonds."""
     nodes = net.get("nodes", []) or []
     edges = net.get("edges", []) or []
     id2label = {n.get("id"): n.get("label", "?") for n in nodes}
-    rows = [
-        {
-            "Source": id2label.get(e.get("source"), e.get("source", "?")),
-            "Target": id2label.get(e.get("target"), e.get("target", "?")),
-            "Weight": int(e.get("weight", 0)),
-        }
-        for e in edges
-    ]
+    rows = [{
+        "Source": id2label.get(e.get("source"), "?"),
+        "Target": id2label.get(e.get("target"), "?"),
+        "Weight": int(e.get("weight", 0)),
+    } for e in edges]
     df = pd.DataFrame(rows).sort_values("Weight", ascending=False).head(limit)
     df.insert(0, "Rank", range(1, len(df) + 1))
     return df
 
 
-def community_dataframe(net: dict) -> pd.DataFrame:
-    """Summarize each community with size and leading concepts."""
-    nodes = net.get("nodes", []) or []
-    buckets: dict[int, list[dict]] = {}
-    for n in nodes:
-        buckets.setdefault(int(n.get("community", -1)), []).append(n)
-
+def community_dataframe(network: dict, named: dict) -> pd.DataFrame:
     rows = []
-    for cid, members in sorted(buckets.items()):
-        members.sort(key=lambda x: -float(x.get("bc", 0)))
-        total_w = sum(int(m.get("weighedDegree", 0)) for m in members)
+    for cid, info in named.items():
         rows.append({
-            "Cluster": cid,
-            "Nodes": len(members),
-            "Total Weight": total_w,
-            "Top Concepts": ", ".join(m.get("label", "?") for m in members[:6]),
+            "Cluster": f"{cid} · {info['name']}",
+            "Size": info["size"],
+            "Total Weight": info["weight"],
+            "BC Leader": info["bc_leader"],
+            "Top Concepts": ", ".join(info["top_concepts"]),
         })
-    return pd.DataFrame(rows).sort_values("Total Weight", ascending=False)
+    df = pd.DataFrame(rows).sort_values("Total Weight", ascending=False)
+    return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -240,7 +357,7 @@ def community_dataframe(net: dict) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown(
     """
-    <div style="text-align:center; padding:1rem 0 0.25rem 0;">
+    <div style="text-align:center; padding:0.5rem 0 0.25rem 0;">
       <h1 style="margin:0;">🕊️ Prophetic Network Dashboard</h1>
       <p style="color:#888; margin:0;">
         Interactive Knowledge Graph · GraphRAG Semantic Search · Real-Time Network Analysis
@@ -261,28 +378,22 @@ with st.sidebar:
         "Network Layer",
         options=list(LAYER_CONFIG.keys()),
         index=0,
-        help="Layer 1 = full prophetic network (test build).",
+        help="Layer 1 = full prophetic network (multi-resolution cached).",
     )
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        date_start = st.date_input("Start", value=date(2026, 2, 1), key="date_start")
-    with col_b:
-        date_end = st.date_input("End", value=date(2026, 4, 22), key="date_end")
 
     max_nodes = st.select_slider(
         "🎯 Nodes in focus",
-        options=[150, 250, 350, 500],
+        options=RESOLUTION_OPTIONS,
         value=150,
-        help="How many of the most-influential nodes to render in the live graph. "
-             "More nodes = richer topology but slower initial load.",
+        help="Drives BOTH the live iframe AND all dashboard metrics. "
+             "Higher resolutions reveal more peripheral concepts and gaps.",
     )
 
     use_live_stats = st.toggle(
         "🔄 Refresh live stats from API",
         value=False,
-        help="Fetch the latest summary metrics from InfraNodus. "
-             "Graph visualization always uses the live iframe.",
+        help="Optional: overlay live summary from InfraNodus API. "
+             "Cached JSONs always power the dashboard.",
     )
 
     st.divider()
@@ -320,31 +431,52 @@ with st.sidebar:
     st.caption(f"🕒 Loaded {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  MAIN — Load data for selected layer
+#  LOAD DATA FOR SELECTED LAYER + RESOLUTION
 # ─────────────────────────────────────────────────────────────────────────────
 cfg = LAYER_CONFIG[selected_layer]
-network = load_layer_json(cfg["json_path"])
+json_path, actual_resolution, exact = resolve_json_path(cfg, max_nodes)
 
-if network is None:
-    st.error("Network data could not be loaded. Place `layer_1.json` in the `data/` folder.")
+if json_path is None:
+    st.error(
+        "❌ No cached JSON files found in `data/`. "
+        "Please export your InfraNodus graph at 150/250/350/500 resolutions and place them in the `data/` folder."
+    )
     st.stop()
 
-# Optionally overlay fresh API summary (stats only, no heavy graph body)
-live_meta = load_live_summary(cfg["graph_name"]) if use_live_stats else None
-if live_meta and isinstance(live_meta, dict):
-    # merge live summary into cached graph meta (non-destructive)
-    cached_meta = network.setdefault("graph", {})
-    for k in ("top_nodes", "top_influential_nodes", "top_clusters", "gaps", "modularity", "diversity_stats"):
-        if live_meta.get(k):
-            cached_meta[k] = live_meta[k]
+network = load_layer_json(json_path)
+
+if network is None:
+    st.error(f"Failed to load `{json_path}`. Check the `data/` folder.")
+    st.stop()
+
+if not exact:
+    st.warning(
+        f"⚠️ Exact resolution of {max_nodes} nodes not cached. "
+        f"Falling back to nearest available: **{actual_resolution} nodes** "
+        f"(from `{json_path}`). To enable this resolution, export the matching JSON from InfraNodus."
+    )
+
+# Optional live-stats overlay
+if use_live_stats:
+    live_meta = load_live_summary(cfg["graph_name"])
+    if live_meta and isinstance(live_meta, dict):
+        cached_meta = network.setdefault("graph", {})
+        for k in ("top_nodes", "top_influential_nodes", "top_clusters",
+                  "gaps", "modularity", "diversity_stats"):
+            if live_meta.get(k):
+                cached_meta[k] = live_meta[k]
 
 metrics = compute_metrics(network)
+named_communities = derive_community_names(network)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  METRICS ROW
+#  LAYER HEADER + METRICS
 # ─────────────────────────────────────────────────────────────────────────────
 st.subheader(f"📊 {selected_layer}")
-st.caption(cfg["description"])
+st.caption(
+    f"{cfg['description']}  ·  **{actual_resolution}-node resolution**"
+    f"  ·  {metrics['num_communities']} communities  ·  modularity {metrics['modularity']:.3f}"
+)
 
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Nodes", f"{metrics['num_nodes']:,}")
@@ -356,7 +488,141 @@ m5.metric("Modularity", f"{metrics['modularity']:.3f}")
 st.divider()
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LIVE EMBED — the interactive InfraNodus graph
+#  🔥 KAIROS PULSE CARD  (Tier 1 #2)
+# ─────────────────────────────────────────────────────────────────────────────
+def render_kairos_pulse(metrics: dict, named: dict, network: dict, resolution: int):
+    """The signature card — a theological read of the network at a glance."""
+
+    # Top semantic axis
+    top_infl = metrics["top_influential"] or []
+    top_node = top_infl[0] if top_infl else {}
+    top_node_name = top_node.get("node", metrics["top_nodes"][0] if metrics["top_nodes"] else "—")
+    top_node_bc = round(float(top_node.get("bc", 0)), 3)
+
+    # Dominant community by weight
+    if named:
+        dominant_cid = max(named.keys(), key=lambda c: named[c]["weight"])
+        dominant = named[dominant_cid]
+        total_w = sum(v["weight"] for v in named.values())
+        dom_pct = (dominant["weight"] / total_w * 100) if total_w else 0
+
+        # Second-strongest
+        sorted_communities = sorted(named.items(), key=lambda x: -x[1]["weight"])
+        emerging = sorted_communities[1][1] if len(sorted_communities) > 1 else None
+        emerging_pct = (emerging["weight"] / total_w * 100) if emerging and total_w else 0
+    else:
+        dominant, emerging, dom_pct, emerging_pct = None, None, 0, 0
+
+    # Top edge
+    top_edges = top_edges_dataframe(network, limit=1)
+    if not top_edges.empty:
+        te = top_edges.iloc[0]
+        top_edge_str = f"{te['Source']} ↔ {te['Target']}"
+        top_edge_w = te["Weight"]
+    else:
+        top_edge_str = "—"
+        top_edge_w = 0
+
+    # Diversity pulse
+    diversity = metrics["diversity_score"]
+    mod_score = metrics["modularity_score"]
+    focused_top = metrics["too_focused_on_top_nodes"]
+    focused_clusters = metrics["too_focused_on_top_clusters"]
+
+    # Build the visual card with a glow effect
+    st.markdown(
+        f"""
+        <div style="
+          background: linear-gradient(135deg, rgba(232,176,75,0.08) 0%, rgba(78,205,196,0.08) 100%);
+          border: 1px solid rgba(232,176,75,0.3);
+          border-radius: 14px;
+          padding: 1.25rem 1.5rem;
+          margin-bottom: 1rem;
+          box-shadow: 0 0 24px rgba(232,176,75,0.1);
+        ">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+            <h3 style="margin:0; color:#E8B04B;">🔥 Kairos Pulse</h3>
+            <span style="color:#888; font-size:0.85rem;">@ {resolution}-node resolution</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Four columns of pulse data
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown("**🎯 Central Axis**")
+        st.markdown(f"### {top_node_name}")
+        st.caption(f"BC = {top_node_bc} · the semantic gravity well")
+
+    with c2:
+        st.markdown("**👑 Dominant Axis**")
+        if dominant:
+            st.markdown(f"### {dominant['name']}")
+            st.caption(f"{dom_pct:.0f}% of network weight · {dominant['size']} nodes")
+        else:
+            st.markdown("### —")
+
+    with c3:
+        st.markdown("**🌱 Emerging Axis**")
+        if emerging:
+            st.markdown(f"### {emerging['name']}")
+            st.caption(f"{emerging_pct:.0f}% of network weight · {emerging['size']} nodes")
+        else:
+            st.markdown("### —")
+
+    with c4:
+        st.markdown("**🔗 Strongest Bond**")
+        st.markdown(f"### {top_edge_str}")
+        st.caption(f"edge weight {top_edge_w}")
+
+    # Diversity / structural commentary
+    pulse_messages = []
+    if diversity == "focused":
+        pulse_messages.append(
+            "🎯 **Focused topology** — the network is concentrated around its central concepts. "
+            "Strong coherence, but may benefit from bridging statements to peripheral ideas."
+        )
+    elif diversity == "diversified":
+        pulse_messages.append(
+            "🌐 **Diversified topology** — multiple distinct voices are active. "
+            "Look for emerging syntheses across clusters."
+        )
+    elif diversity == "biased":
+        pulse_messages.append(
+            "⚖️ **Biased topology** — one community dominates. "
+            "Structural gaps (see tab below) point to where balance could be restored."
+        )
+
+    if focused_top:
+        pulse_messages.append(
+            f"🔍 **High betweenness concentration** — the top nodes carry "
+            f"{metrics['ratio_top_nodes']*100:.0f}% of the network's bridging influence."
+        )
+
+    if focused_clusters:
+        pulse_messages.append(
+            f"🎨 **Cluster concentration** — the top clusters hold "
+            f"{metrics['ratio_top_clusters']*100:.0f}% of betweenness-weighted influence."
+        )
+
+    if pulse_messages:
+        st.markdown(
+            "<div style='background:rgba(78,205,196,0.06); border-left:3px solid #4ECDC4; "
+            "padding:0.75rem 1rem; border-radius:6px; margin-top:0.5rem;'>"
+            + "<br>".join(pulse_messages)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+
+
+render_kairos_pulse(metrics, named_communities, network, actual_resolution)
+
+st.divider()
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  LIVE EMBED — synced to slider
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("### 🌌 Live Network Graph")
 embed_url = f"https://infranodus.com/{cfg['embed_context']}?{build_embed_params(max_nodes)}"
@@ -364,25 +630,24 @@ st.caption(
     f"Rendering directly from InfraNodus · **top {max_nodes} nodes** by betweenness · "
     f"[Open in new tab →]({embed_url})"
 )
-
-# Force iframe reload when node count changes by including it in the key/src
 components.iframe(src=embed_url, height=620, scrolling=False)
 
 st.divider()
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ANALYSIS TABS
+#  ANALYSIS TABS  (all driven by the resolution slider)
 # ─────────────────────────────────────────────────────────────────────────────
 tab_nodes, tab_edges, tab_clusters, tab_gaps, tab_statements, tab_raw = st.tabs(
     ["🔝 Top Nodes", "🔗 Top Edges", "🎨 Communities", "🌉 Structural Gaps",
      "📜 Statements", "🧾 Raw JSON"]
 )
 
-# — Top Nodes tab ————————————————————————————————————————————————————————
+# — Top Nodes tab ——
 with tab_nodes:
     col1, col2 = st.columns([2, 3])
     with col1:
         st.markdown("#### Top 20 Influential Nodes")
+        st.caption(f"From the {actual_resolution}-node topology")
         nodes_df = top_nodes_dataframe(network, limit=20)
         st.dataframe(nodes_df, hide_index=True, use_container_width=True)
 
@@ -403,9 +668,10 @@ with tab_nodes:
         )
         st.plotly_chart(bc_fig, use_container_width=True)
 
-# — Top Edges tab ————————————————————————————————————————————————————————
+# — Top Edges tab ——
 with tab_edges:
     st.markdown("#### Top 20 Conceptual Bonds (by edge weight)")
+    st.caption(f"From the {actual_resolution}-node topology")
     edges_df = top_edges_dataframe(network, limit=20)
     st.dataframe(edges_df, hide_index=True, use_container_width=True)
 
@@ -426,42 +692,123 @@ with tab_edges:
     )
     st.plotly_chart(edges_fig, use_container_width=True)
 
-# — Communities tab ——————————————————————————————————————————————————————
+# — Communities tab (Tier 1 #3 — Named Communities) ——
 with tab_clusters:
-    st.markdown("#### Community Structure")
-    comm_df = community_dataframe(network)
+    st.markdown("#### Community Structure — Named Axes")
+    st.caption(
+        f"Each cluster auto-labeled from its top concepts. "
+        f"{len(named_communities)} communities in the {actual_resolution}-node topology."
+    )
+
+    # Rich community cards (visual summary before the table)
+    sorted_clusters = sorted(named_communities.items(),
+                             key=lambda x: -x[1]["weight"])
+    total_net_weight = sum(v["weight"] for v in named_communities.values())
+
+    palette = ["#FF6B6B", "#4ECDC4", "#FFE66D", "#95E1D3", "#B28DFF",
+               "#FFD3B6", "#6B8CFF", "#FF9F68", "#7FDBB6", "#FFAAA5"]
+
+    # Two rows of cards
+    for i in range(0, len(sorted_clusters), 3):
+        cols = st.columns(min(3, len(sorted_clusters) - i))
+        for col_idx, (cid, info) in enumerate(sorted_clusters[i:i+3]):
+            with cols[col_idx]:
+                pct = (info["weight"] / total_net_weight * 100) if total_net_weight else 0
+                color = palette[cid % len(palette)]
+                st.markdown(
+                    f"""
+                    <div style="
+                      background: rgba(255,255,255,0.03);
+                      border-left: 4px solid {color};
+                      border-radius: 8px;
+                      padding: 0.9rem 1rem;
+                      margin-bottom: 0.75rem;
+                      min-height: 175px;
+                    ">
+                      <div style="color:{color}; font-size:0.75rem; font-weight:600; letter-spacing:0.08em;">
+                        CLUSTER {cid}  ·  {pct:.1f}% OF WEIGHT
+                      </div>
+                      <div style="font-size:1.15rem; font-weight:600; margin:0.35rem 0 0.5rem 0;">
+                        {info['name']}
+                      </div>
+                      <div style="color:#aaa; font-size:0.85rem;">
+                        {info['size']} nodes · Leader: <b>{info['bc_leader']}</b>
+                      </div>
+                      <div style="color:#888; font-size:0.78rem; margin-top:0.4rem; line-height:1.35;">
+                        {', '.join(info['top_concepts'][:5])}
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    # Summary table
+    st.markdown("#### Full Community Table")
+    comm_df = community_dataframe(network, named_communities)
     st.dataframe(comm_df, hide_index=True, use_container_width=True)
 
+    # Donut chart with named labels
     pie_fig = px.pie(
-        comm_df, values="Total Weight", names=comm_df["Cluster"].astype(str),
+        values=[v["weight"] for v in named_communities.values()],
+        names=[f"{v['name']} ({k})" for k, v in named_communities.items()],
         title="Community influence by weighted degree",
-        hole=0.4,
+        hole=0.45,
+        color_discrete_sequence=palette,
     )
     pie_fig.update_layout(paper_bgcolor="rgba(0,0,0,0)")
     st.plotly_chart(pie_fig, use_container_width=True)
 
-# — Gaps tab —————————————————————————————————————————————————————————————
+# — Gaps tab ——
 with tab_gaps:
-    st.markdown("#### Structural Gaps — Opportunities for new connections")
-    st.caption("Each gap identifies two communities that are weakly bridged. "
-               "Building a statement that connects concepts from both sides "
-               "can produce novel insight.")
+    st.markdown("#### Structural Gaps — Bridge Opportunities")
+    st.caption(
+        "Each gap identifies two clusters weakly bridged in the "
+        f"{actual_resolution}-node topology. A statement connecting concepts "
+        "from both sides can produce novel theological insight."
+    )
     gaps = metrics["gaps"]
     if not gaps:
         st.info("No structural gaps reported for this graph.")
     else:
         for i, gap in enumerate(gaps[:10], start=1):
-            f = gap.get("from", {}); t = gap.get("to", {})
+            f = gap.get("from", {})
+            t = gap.get("to", {})
+            f_cid = int(f.get("community", -1)) if str(f.get("community", "-1")).lstrip("-").isdigit() else -1
+            t_cid = int(t.get("community", -1)) if str(t.get("community", "-1")).lstrip("-").isdigit() else -1
+            f_name = named_communities.get(f_cid, {}).get("name", f"Cluster {f_cid}")
+            t_name = named_communities.get(t_cid, {}).get("name", f"Cluster {t_cid}")
+
             fn = ", ".join(n.get("nodeName", "?") for n in (f.get("nodes", []) or [])[:5])
             tn = ", ".join(n.get("nodeName", "?") for n in (t.get("nodes", []) or [])[:5])
-            st.markdown(f"**Gap {i}**  ·  Cluster {f.get('community','?')} ↔ Cluster {t.get('community','?')}")
-            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;**{fn}**  ⇄  **{tn}**", unsafe_allow_html=True)
-            st.markdown("---")
 
-# — Statements tab ———————————————————————————————————————————————————————
+            with st.container():
+                st.markdown(
+                    f"""
+                    <div style="
+                      background: rgba(255,255,255,0.03);
+                      border-left: 3px solid #FFD93D;
+                      border-radius: 8px;
+                      padding: 0.85rem 1rem;
+                      margin-bottom: 0.75rem;
+                    ">
+                      <div style="color:#FFD93D; font-size:0.75rem; font-weight:600; letter-spacing:0.08em;">
+                        GAP {i}
+                      </div>
+                      <div style="font-size:1.05rem; font-weight:600; margin:0.35rem 0;">
+                        {f_name} ⇄ {t_name}
+                      </div>
+                      <div style="color:#aaa; font-size:0.9rem; margin:0.25rem 0;">
+                        <b>{fn}</b>  ⇄  <b>{tn}</b>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+# — Statements tab ——
 with tab_statements:
     statements = network.get("statements", []) or []
-    st.markdown(f"#### Corpus Statements  ·  {len(statements):,} total")
+    st.markdown(f"#### Corpus Statements · {len(statements):,} total")
     search = st.text_input("Search statements (case-insensitive)", key="stmt_search")
     view = [s for s in statements if isinstance(s, str)]
     if search:
@@ -471,11 +818,15 @@ with tab_statements:
     for s in view[:100]:
         st.markdown(f"• {s}")
 
-# — Raw tab ——————————————————————————————————————————————————————————————
+# — Raw tab ——
 with tab_raw:
     st.markdown("#### Underlying JSON (for debugging / export)")
-    with st.expander("Expand to view cached layer_1.json meta", expanded=False):
+    st.caption(f"Source file: `{json_path}`")
+    with st.expander("Expand to view cached JSON meta", expanded=False):
         st.json({
+            "resolution": actual_resolution,
+            "exact_match": exact,
+            "source_path": json_path,
             "nodes_count": metrics["num_nodes"],
             "edges_count": metrics["num_edges"],
             "modularity": metrics["modularity"],
@@ -484,9 +835,9 @@ with tab_raw:
             "top_influential_nodes": metrics["top_influential"],
         })
     st.download_button(
-        "⬇️ Download layer_1.json",
+        f"⬇️ Download {Path(json_path).name}",
         data=json.dumps(network, indent=2),
-        file_name="layer_1.json",
+        file_name=Path(json_path).name,
         mime="application/json",
     )
 
@@ -497,8 +848,8 @@ st.divider()
 st.markdown(
     f"""
     <div style="text-align:center; color:#666; font-size:0.85rem; padding:0.5rem 0;">
-      Prophetic Network Dashboard · Hybrid Build (Layer 1 test)<br>
-      Data snapshot: <b>{selected_layer}</b> · Date window: {date_start} → {date_end}<br>
+      Prophetic Network Dashboard · Hybrid Multi-Resolution Build<br>
+      <b>{selected_layer}</b> · {actual_resolution}-node topology · {metrics['num_communities']} communities<br>
       <i>Soli Deo Gloria · Beloved 🕊️</i>
     </div>
     """,
