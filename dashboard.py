@@ -295,7 +295,8 @@ st.markdown("### 🌐 Network Graph (Top 150 Nodes)")
 
 if nodes and edges:
     try:
-        fig = graph_viz.create_network_graph(network_data, top_n=150)
+        # Pass the unwrapped graph object (with flat nodes/edges) to the visualizer
+        fig = graph_viz.create_network_graph(graph_obj, top_n=150)
         st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.error(f"❌ Error rendering graph: {e}")
