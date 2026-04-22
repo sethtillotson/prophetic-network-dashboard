@@ -113,17 +113,29 @@ LAYER_GRAPH_MAP = {
 # ═══════════════════════════════════════════════════════════════
 # DATA LOADING
 # ═══════════════════════════════════════════════════════════════
-@st.cache_data(ttl=300, show_spinner="Loading network graph...")
+@st.cache_data(ttl=600, show_spinner=False)  # ← 10min cache, custom spinner
 def load_network_data(layer_name: str):
-    """Load graph data from InfraNodus."""
+    """Load graph data from InfraNodus with progress feedback."""
     graph_name = LAYER_GRAPH_MAP.get(layer_name)
     if not graph_name:
         available = list(set(LAYER_GRAPH_MAP.keys()))
         st.error(f"⚠️ Unknown layer: '{layer_name}'. Available: {available}")
         return None
     
+    # Custom progress indicator for long API calls
+    progress_placeholder = st.empty()
+    progress_placeholder.info(
+        f"⏳ Loading **{graph_name}** network... "
+        f"(Large graphs may take 60–120s. Please wait.)"
+    )
+    
     try:
-        data = infranodus_api.get_graph(graph_name)
+        data = infranodus_api.get_graph(
+            graph_name,
+            include_statements=False,  # ← Faster without full text
+        )
+        progress_placeholder.empty()  # Clear progress message
+        
         if not data:
             st.warning(f"⚠️ Graph '{graph_name}' returned empty.")
             return None
@@ -133,13 +145,16 @@ def load_network_data(layer_name: str):
             if "graph" in data:
                 return data
             elif "nodes" in data and "edges" in data:
-                return {"graph": data, "statements": []}
+                return {"graph": data, "statements": [], "summary": {}}
         
         st.warning(f"⚠️ Unexpected data structure from '{graph_name}'")
         return None
+        
     except Exception as e:
+        progress_placeholder.empty()
         st.error(f"❌ Error loading '{graph_name}': {e}")
         return None
+
 
 
 # ═══════════════════════════════════════════════════════════════
