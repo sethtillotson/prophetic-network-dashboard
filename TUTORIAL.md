@@ -92,6 +92,10 @@ Below the columns, **pulse messages** interpret the topology:
 Ranked list of the 20 most-influential concepts by betweenness centrality.
 - **Table**: exact BC values, degree, weighted degree, community
 - **Chart**: horizontal bar chart colored by community
+- **🎯 Click-to-Focus**: click any row in the table to instantly focus the
+  live InfraNodus iframe on that node. The graph will search for the node,
+  highlight it, and reveal its neighborhood. A *"Clear focus"* button
+  appears near the iframe to return to the full network view.
 
 **Reading tip**: High BC = this concept bridges multiple conversations. `@god` at BC 0.92 means 92% of the network's bridging paths go through it.
 
@@ -179,6 +183,16 @@ Export the current view as JSON for research, sharing, or debugging.
 2. Read the **🔥 Kairos Pulse Card** aloud
 3. Write down the four quadrants: Central, Dominant, Emerging, Strongest Bond
 4. Compare to last week/month — this is your prophetic heartbeat
+
+### Workflow 6: "What does this node see?" (Node-Neighborhood Exploration)
+1. Set resolution to **350** or **500**
+2. Go to **🔝 Top Nodes** tab
+3. **Click any row** (e.g., `@jonah`) — the live iframe refocuses on that node
+4. Scroll up and explore the neighborhood in the InfraNodus iframe:
+   - Zoom in to see its closest neighbors
+   - Use InfraNodus's native tools to trace its connections
+5. Click **❌ Clear focus** above the iframe to return to the full view
+6. Try another node and compare how each concept's "world" differs
 
 ---
 
