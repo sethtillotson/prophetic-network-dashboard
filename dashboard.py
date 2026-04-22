@@ -96,6 +96,16 @@ LAYER_CONFIG = {
 
 RESOLUTION_OPTIONS = [150, 250, 350, 500]
 
+# Curated exclusion presets for theological experiments
+EXCLUSION_PRESETS = {
+    "— None —": [],
+    "👁 Silence the Dominant": ["@god", "@jesus", "@revelation"],
+    "💬 Beyond the Prophets": ["@jonah", "@the_prophet", "@peter", "@paul"],
+    "🌱 Reveal Underlying (Top 5)": ["@god", "@jesus", "@revelation", "@jonah", "@wilderness"],
+    "📜 Strip Meta-Terms": ["@theology", "@meditation", "@mind"],
+    "🔥 Kairos Minimal": ["@god", "@jesus", "@revelation", "@jonah", "@wilderness", "@leaven", "@mind", "@prayer", "@word", "@christ"],
+}
+
 
 def build_embed_params(max_nodes: int = 150) -> str:
     """Build the InfraNodus iframe query string with configurable node cap."""
@@ -195,6 +205,37 @@ def load_live_summary(graph_name: str) -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 #  HELPERS — derive metrics from cached JSON
 # ─────────────────────────────────────────────────────────────────────────────
+def apply_exclusions(network: dict, excluded_labels: list[str]) -> dict:
+    """
+    Return a filtered deep-copy of the network with excluded nodes and their
+    incident edges removed. Recomputes per-community sizes locally. The
+    upstream graph meta (modularity, gaps, top_clusters) is preserved but
+    flagged so the UI can show it as ‘original’ where appropriate.
+    """
+    if not excluded_labels:
+        return network
+    excluded_set = {lbl.strip().lower() for lbl in excluded_labels if lbl}
+    orig_nodes = network.get("nodes", []) or []
+    orig_edges = network.get("edges", []) or []
+
+    kept_nodes = [n for n in orig_nodes if n.get("label", "").lower() not in excluded_set]
+    kept_ids = {n.get("id") for n in kept_nodes}
+    kept_edges = [e for e in orig_edges
+                  if e.get("source") in kept_ids and e.get("target") in kept_ids]
+
+    filtered = {
+        "nodes": kept_nodes,
+        "edges": kept_edges,
+        "graph": dict(network.get("graph", {}) or {}),
+        "statements": network.get("statements", []),
+        "statementHashtags": network.get("statementHashtags", {}),
+        "_filtered": True,
+        "_excluded_count": len(orig_nodes) - len(kept_nodes),
+        "_excluded_edges": len(orig_edges) - len(kept_edges),
+    }
+    return filtered
+
+
 def compute_metrics(net: dict) -> dict:
     """Compute headline metrics from a cached InfraNodus JSON structure."""
     nodes = net.get("nodes", []) or []
@@ -389,6 +430,44 @@ with st.sidebar:
              "Higher resolutions reveal more peripheral concepts and gaps.",
     )
 
+    # ── STRUCTURAL CONTEMPLATION MODE ──
+    st.markdown("#### 🧘 Structural Contemplation")
+    st.caption("Exclude nodes to reveal hidden topologies. Dashboard tabs will recompute.")
+
+    preset_choice = st.selectbox(
+        "Quick preset",
+        options=list(EXCLUSION_PRESETS.keys()),
+        index=0,
+        help="Curated exclusion sets for common theological experiments.",
+    )
+    preset_excluded = EXCLUSION_PRESETS.get(preset_choice, [])
+
+    # Quick-pick buttons for the 5 most common exclusions
+    st.caption("Quick-remove top concepts:")
+    qp_cols = st.columns(5)
+    quick_buttons = ["@god", "@jesus", "@revelation", "@jonah", "@wilderness"]
+    if "quick_excluded" not in st.session_state:
+        st.session_state.quick_excluded = []
+    for i, qp_label in enumerate(quick_buttons):
+        with qp_cols[i]:
+            is_on = qp_label in st.session_state.quick_excluded
+            btn_label = f"❌ {qp_label[1:3]}" if is_on else qp_label[1:3]
+            if st.button(btn_label, key=f"qp_{qp_label}", use_container_width=True,
+                         help=f"{'Re-include' if is_on else 'Exclude'} {qp_label}"):
+                if is_on:
+                    st.session_state.quick_excluded.remove(qp_label)
+                else:
+                    st.session_state.quick_excluded.append(qp_label)
+                st.rerun()
+
+    # Power-user multiselect is rendered AFTER we load the network below.
+    custom_exclusions_placeholder = st.empty()
+
+    if st.button("🔄 Clear all exclusions", use_container_width=True):
+        st.session_state.quick_excluded = []
+        st.session_state["custom_exclusions"] = []
+        st.rerun()
+
     use_live_stats = st.toggle(
         "🔄 Refresh live stats from API",
         value=False,
@@ -443,17 +522,52 @@ if json_path is None:
     )
     st.stop()
 
-network = load_layer_json(json_path)
+full_network = load_layer_json(json_path)
 
-if network is None:
+if full_network is None:
     st.error(f"Failed to load `{json_path}`. Check the `data/` folder.")
     st.stop()
+
+# Populate the custom exclusions multiselect with actual node labels from this resolution
+_all_labels = sorted(
+    {n.get("label", "") for n in full_network.get("nodes", []) if n.get("label")}
+)
 
 if not exact:
     st.warning(
         f"⚠️ Exact resolution of {max_nodes} nodes not cached. "
         f"Falling back to nearest available: **{actual_resolution} nodes** "
         f"(from `{json_path}`). To enable this resolution, export the matching JSON from InfraNodus."
+    )
+
+# Render the searchable multiselect now that we have the label list
+with custom_exclusions_placeholder.container():
+    custom_exclusions = st.multiselect(
+        "🔍 Or search any node to exclude",
+        options=_all_labels,
+        default=st.session_state.get("custom_exclusions", []),
+        key="custom_exclusions",
+        help="Search any node in the current resolution to add to exclusions.",
+    )
+
+# Combine all exclusion sources
+all_excluded = sorted(set(
+    (preset_excluded or [])
+    + (st.session_state.get("quick_excluded", []) or [])
+    + (st.session_state.get("custom_exclusions", []) or [])
+))
+
+# Apply exclusions
+network_full_view = full_network  # keep the pre-exclusion view for comparisons
+network = apply_exclusions(full_network, all_excluded)
+
+# If exclusions active, show a prominent banner
+if all_excluded:
+    excluded_text = ", ".join(all_excluded)
+    st.info(
+        f"🧘 **Structural Contemplation active** — excluding {len(all_excluded)} node(s): "
+        f"`{excluded_text}`. Dashboard tabs below reflect the **reduced topology**. "
+        f"The live iframe still shows the full network."
     )
 
 # Optional live-stats overlay
@@ -469,6 +583,10 @@ if use_live_stats:
 metrics = compute_metrics(network)
 named_communities = derive_community_names(network)
 
+# Always compute full-view metrics for side-by-side comparison
+metrics_full = compute_metrics(network_full_view)
+named_communities_full = derive_community_names(network_full_view)
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  LAYER HEADER + METRICS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -478,12 +596,24 @@ st.caption(
     f"  ·  {metrics['num_communities']} communities  ·  modularity {metrics['modularity']:.3f}"
 )
 
+# Metric deltas when exclusions are active
+def _delta(new, old):
+    if not all_excluded or old == 0:
+        return None
+    diff = new - old
+    return f"{diff:+,}" if isinstance(diff, int) else f"{diff:+.3f}"
+
 m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("Nodes", f"{metrics['num_nodes']:,}")
-m2.metric("Edges", f"{metrics['num_edges']:,}")
-m3.metric("Communities", f"{metrics['num_communities']}")
-m4.metric("Total Weight", f"{metrics['total_weight']:,}")
-m5.metric("Modularity", f"{metrics['modularity']:.3f}")
+m1.metric("Nodes", f"{metrics['num_nodes']:,}",
+          delta=_delta(metrics['num_nodes'], metrics_full['num_nodes']))
+m2.metric("Edges", f"{metrics['num_edges']:,}",
+          delta=_delta(metrics['num_edges'], metrics_full['num_edges']))
+m3.metric("Communities", f"{metrics['num_communities']}",
+          delta=_delta(metrics['num_communities'], metrics_full['num_communities']))
+m4.metric("Total Weight", f"{metrics['total_weight']:,}",
+          delta=_delta(metrics['total_weight'], metrics_full['total_weight']))
+m5.metric("Modularity", f"{metrics['modularity']:.3f}",
+          delta=_delta(metrics['modularity'], metrics_full['modularity']))
 
 st.divider()
 
@@ -637,9 +767,9 @@ st.divider()
 # ─────────────────────────────────────────────────────────────────────────────
 #  ANALYSIS TABS  (all driven by the resolution slider)
 # ─────────────────────────────────────────────────────────────────────────────
-tab_nodes, tab_edges, tab_clusters, tab_gaps, tab_statements, tab_raw = st.tabs(
+tab_nodes, tab_edges, tab_clusters, tab_gaps, tab_impact, tab_compare, tab_statements, tab_raw = st.tabs(
     ["🔝 Top Nodes", "🔗 Top Edges", "🎨 Communities", "🌉 Structural Gaps",
-     "📜 Statements", "🧾 Raw JSON"]
+     "📊 Exclusion Impact", "⚖️ Compare", "📜 Statements", "🧾 Raw JSON"]
 )
 
 # — Top Nodes tab ——
@@ -823,6 +953,144 @@ with tab_gaps:
                     """,
                     unsafe_allow_html=True,
                 )
+
+# — Exclusion Impact tab (Bonus #3) ——
+with tab_impact:
+    st.markdown("#### Betweenness Footprint — How much each top node bridges the network")
+    st.caption(
+        "Each node's betweenness score shows how much it acts as a bridge across the network. "
+        "Higher values = more structural influence. Remove a high-BC node to see which others rise."
+    )
+    top_bc_nodes = sorted(
+        [n for n in network_full_view.get("nodes", []) if _is_concept_token(n.get("label", ""))],
+        key=lambda n: -float(n.get("bc", 0))
+    )[:25]
+    impact_df = pd.DataFrame([{
+        "Node": n.get("label", "?"),
+        "Betweenness": round(float(n.get("bc", 0)), 4),
+        "Weighted Degree": int(n.get("weighedDegree", 0)),
+        "Community": int(n.get("community", -1)),
+        "Currently Excluded": n.get("label", "") in all_excluded,
+    } for n in top_bc_nodes])
+
+    chart_df = impact_df.sort_values("Betweenness", ascending=True)
+    impact_fig = px.bar(
+        chart_df,
+        x="Betweenness", y="Node",
+        orientation="h",
+        color="Currently Excluded",
+        color_discrete_map={True: "#FF6B6B", False: "#4ECDC4"},
+        text="Betweenness",
+        height=700,
+    )
+    impact_fig.update_traces(textposition="outside", cliponaxis=False,
+                             texttemplate="%{x:.3f}")
+    impact_fig.update_layout(
+        yaxis=dict(categoryorder="array", categoryarray=chart_df["Node"].tolist()),
+        margin=dict(l=0, r=40, t=10, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(title="Status"),
+    )
+    st.plotly_chart(impact_fig, use_container_width=True)
+
+    with st.expander("💡 How to read this chart"):
+        st.markdown(
+            "- **Teal bars** = nodes currently included in the analysis.\n"
+            "- **Red bars** = nodes you've excluded via the sidebar.\n"
+            "- **Longer bars** = more structural influence. These nodes bridge "
+            "across communities; removing them redistributes the network's attention.\n"
+            "- **Strategy**: Try excluding the top 3 bars one at a time to see which "
+            "axes rise and which gaps emerge beneath them."
+        )
+
+# — Compare tab (Bonus #2) ——
+with tab_compare:
+    st.markdown("#### Before vs. After — Impact of current exclusions")
+    if not all_excluded:
+        st.info(
+            "🧘 No exclusions active. Select a preset or quick-pick node in the sidebar "
+            "to see the before/after comparison here."
+        )
+    else:
+        st.caption(f"Showing impact of excluding: `{', '.join(all_excluded)}`")
+
+        cA, cB = st.columns(2)
+        with cA:
+            st.markdown("##### 📊 Full Network")
+            st.metric("Nodes", f"{metrics_full['num_nodes']:,}")
+            st.metric("Edges", f"{metrics_full['num_edges']:,}")
+            st.metric("Total Weight", f"{metrics_full['total_weight']:,}")
+            st.metric("Communities", f"{metrics_full['num_communities']}")
+        with cB:
+            st.markdown("##### 🧘 Reduced Topology")
+            st.metric("Nodes", f"{metrics['num_nodes']:,}",
+                      delta=f"{metrics['num_nodes'] - metrics_full['num_nodes']:+,}")
+            st.metric("Edges", f"{metrics['num_edges']:,}",
+                      delta=f"{metrics['num_edges'] - metrics_full['num_edges']:+,}")
+            st.metric("Total Weight", f"{metrics['total_weight']:,}",
+                      delta=f"{metrics['total_weight'] - metrics_full['total_weight']:+,}")
+            st.metric("Communities", f"{metrics['num_communities']}",
+                      delta=f"{metrics['num_communities'] - metrics_full['num_communities']:+}")
+
+        st.markdown("##### 🎨 Community Weight Shift")
+        # Build a side-by-side community comparison
+        tot_full = sum(v["weight"] for v in named_communities_full.values()) or 1
+        tot_new = sum(v["weight"] for v in named_communities.values()) or 1
+
+        comparison_rows = []
+        all_cids = sorted(set(named_communities_full.keys()) | set(named_communities.keys()))
+        for cid in all_cids:
+            full_info = named_communities_full.get(cid, {})
+            new_info = named_communities.get(cid, {})
+            name = new_info.get("name", full_info.get("name", f"Cluster {cid}"))
+            full_pct = full_info.get("weight", 0) / tot_full * 100
+            new_pct = new_info.get("weight", 0) / tot_new * 100
+            comparison_rows.append({
+                "Axis": name,
+                "Before %": round(full_pct, 1),
+                "After %": round(new_pct, 1),
+                "Shift": round(new_pct - full_pct, 1),
+            })
+        cmp_df = pd.DataFrame(comparison_rows).sort_values("Shift", ascending=False)
+
+        st.dataframe(
+            cmp_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Before %": st.column_config.NumberColumn(format="%.1f%%"),
+                "After %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Shift": st.column_config.NumberColumn(
+                    format="%+.1f pp",
+                    help="Percentage point change. Positive = this axis gained influence."
+                ),
+            },
+        )
+
+        # Show which top edges disappeared
+        orig_edges_df = top_edges_dataframe(network_full_view, limit=10)
+        new_edges_df = top_edges_dataframe(network, limit=10)
+        orig_pairs = set(tuple(sorted([r["Source"], r["Target"]])) for _, r in orig_edges_df.iterrows())
+        new_pairs = set(tuple(sorted([r["Source"], r["Target"]])) for _, r in new_edges_df.iterrows())
+        disappeared = orig_pairs - new_pairs
+        newly_visible = new_pairs - orig_pairs
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("##### 💋 Silenced (bonds removed)")
+            if disappeared:
+                for s, t in sorted(disappeared):
+                    st.markdown(f"- {s} ↔ {t}")
+            else:
+                st.caption("No top-10 bonds removed.")
+        with c2:
+            st.markdown("##### ✨ Newly Visible (bonds rising)")
+            if newly_visible:
+                for s, t in sorted(newly_visible):
+                    st.markdown(f"- {s} ↔ {t}")
+            else:
+                st.caption("Top-10 bonds unchanged.")
 
 # — Statements tab ——
 with tab_statements:
