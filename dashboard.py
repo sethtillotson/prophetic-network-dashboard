@@ -653,8 +653,10 @@ with tab_nodes:
 
     with col2:
         st.markdown("#### Betweenness Centrality Distribution")
+        # Sort ASC so the highest-BC node draws at the TOP of the bar chart.
+        nodes_chart = nodes_df.sort_values("Betweenness", ascending=True)
         bc_fig = px.bar(
-            nodes_df.sort_values("Betweenness"),
+            nodes_chart,
             x="Betweenness", y="Node",
             orientation="h",
             color="Community",
@@ -662,6 +664,10 @@ with tab_nodes:
             height=620,
         )
         bc_fig.update_layout(
+            yaxis=dict(
+                categoryorder="array",
+                categoryarray=nodes_chart["Node"].tolist(),
+            ),
             margin=dict(l=0, r=0, t=10, b=0),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
@@ -675,18 +681,31 @@ with tab_edges:
     edges_df = top_edges_dataframe(network, limit=20)
     st.dataframe(edges_df, hide_index=True, use_container_width=True)
 
+    # Build a chart-ready frame with an explicit Edge label column,
+    # then sort ASC so the highest-weight edge appears at the TOP of the bar chart.
+    chart_df = edges_df.copy()
+    chart_df["Edge"] = chart_df["Source"] + " ↔ " + chart_df["Target"]
+    chart_df = chart_df.sort_values("Weight", ascending=True)  # Plotly draws y from bottom->top
+
     edges_fig = px.bar(
-        edges_df.sort_values("Weight"),
+        chart_df,
         x="Weight",
-        y=edges_df["Source"] + " ↔ " + edges_df["Target"],
+        y="Edge",
         orientation="h",
         color="Weight",
         color_continuous_scale="Turbo",
         height=620,
+        text="Weight",
     )
+    edges_fig.update_traces(textposition="outside", cliponaxis=False)
     edges_fig.update_layout(
-        yaxis_title="Edge",
-        margin=dict(l=0, r=0, t=10, b=0),
+        yaxis=dict(
+            title="Edge",
+            categoryorder="array",
+            categoryarray=chart_df["Edge"].tolist(),  # lock y-order to match sort
+        ),
+        xaxis_title="Weight",
+        margin=dict(l=0, r=40, t=10, b=0),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
     )
