@@ -22,6 +22,7 @@ class InfraNodusAPI:
         })
 
     def _post(self, path: str, payload: Dict[str, Any], params: Optional[Dict] = None) -> Dict:
+        """Internal POST request handler."""
         url = f"{self.BASE_URL}{path}"
         try:
             r = self.session.post(url, json=payload, params=params, timeout=self.timeout)
@@ -38,7 +39,7 @@ class InfraNodusAPI:
     def list_graphs(self, limit: int = 50) -> List[Dict]:
         """List all graphs for the authenticated user."""
         result = self._post("/listGraphs", payload={"limit": limit})
-        # Response is typically {"graphs": [...]} or a list directly
+        # Response structure: {"graphs": [...]} or direct list
         if isinstance(result, dict):
             return result.get("graphs") or result.get("data") or [result]
         return result if isinstance(result, list) else []
@@ -50,7 +51,18 @@ class InfraNodusAPI:
         include_statements: bool = True,
         include_stats: bool = True,
     ) -> Dict:
-        """Retrieve an existing graph by name, including nodes, edges, and statements."""
+        """
+        Retrieve an existing graph by name.
+        
+        Args:
+            name: Graph context name (e.g., 'layer_1', 'layer_3')
+            include_graph: Include nodes/edges
+            include_statements: Include text statements
+            include_stats: Include summary statistics
+        
+        Returns:
+            Dict with keys: graph, statements, summary
+        """
         payload = {"name": name}
         params = {
             "includeGraph": str(include_graph).lower(),
