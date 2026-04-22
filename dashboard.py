@@ -113,9 +113,16 @@ def build_embed_params(max_nodes: int = 150, focus_node: str | None = None) -> s
 
     Args:
         max_nodes: resolution cap (150/250/350/500).
-        focus_node: optional node label (e.g. '@god') to highlight on load.
-                    InfraNodus supports a ``search`` parameter that pre-fills
-                    the iframe's search box, filtering/highlighting that node.
+        focus_node: optional node label (e.g. '@god') to narrow the iframe to.
+                    Uses exact quoted match via the ``search`` parameter to
+                    avoid substring matches on document labels like ``[[god]]``.
+
+    Note:
+        InfraNodus doesn't publicly expose a URL parameter for centering the
+        camera on a specific node. The ``search`` parameter filters visible
+        nodes to those matching the query. For true node-centering, use the
+        "Open in InfraNodus" button — that loads the full InfraNodus app,
+        which centers correctly on the target node.
     """
     params = (
         "background=dark"
@@ -134,14 +141,28 @@ def build_embed_params(max_nodes: int = 150, focus_node: str | None = None) -> s
         "&link_hashtags=1"
     )
     if focus_node:
-        # Try multiple query parameter names — InfraNodus accepts 'search',
-        # and some builds also honor 'selected_node' / 'node'.
-        # Using 'search' pre-fills the iframe's search box, which highlights
-        # and often centers the matching node.
         from urllib.parse import quote
-        encoded = quote(focus_node)
-        params += f"&search={encoded}&selected_node={encoded}&node={encoded}"
+        # Use quoted exact match to avoid substring matches on `[[...]]` labels.
+        # InfraNodus's search recognises double-quoted strings as exact matches.
+        exact_query = f'"{focus_node}"'
+        params += f"&search={quote(exact_query)}"
     return params
+
+
+def build_infranodus_node_url(embed_context: str, node_label: str) -> str:
+    """
+    Build a direct link to the InfraNodus app page for a specific node.
+    Opening this URL in a new tab loads the full InfraNodus UI and selects
+    the node — which DOES center and highlight it natively.
+    """
+    from urllib.parse import quote
+    # Use exact-match search to isolate the node in the full InfraNodus UI.
+    exact_query = f'"{node_label}"'
+    return (
+        f"https://infranodus.com/{embed_context}"
+        f"?search={quote(exact_query)}"
+        f"&selected=highlight&dynamic=highlight&cutgraph=1"
+    )
 
 
 # Semantic names for communities — auto-derived but with curated overrides
@@ -779,7 +800,8 @@ st.divider()
 st.markdown("### 🌌 Live Network Graph")
 
 # Click-to-Focus: if the user clicked a row in the Top Nodes table, that node
-# is stored in session_state and injected into the iframe URL as a search term.
+# is stored in session_state and used for (a) iframe search filter, and
+# (b) building the "Open in InfraNodus" direct-link button.
 focus_node = st.session_state.get("focus_node", None)
 
 embed_url = (
@@ -788,26 +810,42 @@ embed_url = (
 )
 
 # Header row: caption on left, focus controls on right
-fc_col1, fc_col2 = st.columns([3, 1])
+fc_col1, fc_col2, fc_col3 = st.columns([3, 1, 1])
 with fc_col1:
     if focus_node:
         st.caption(
-            f"🎯 **Focused on `{focus_node}`** · top {max_nodes} nodes · "
-            f"[Open in new tab →]({embed_url})"
+            f"🎯 **Filtered to `{focus_node}`** · top {max_nodes} nodes · "
+            f"[Open embed in new tab →]({embed_url})"
         )
     else:
         st.caption(
             f"Rendering directly from InfraNodus · **top {max_nodes} nodes** "
-            f"by betweenness · [Open in new tab →]({embed_url})"
+            f"by betweenness · [Open embed in new tab →]({embed_url})"
         )
 with fc_col2:
+    if focus_node:
+        # Direct link to InfraNodus app — loads full UI centered on this node
+        node_url = build_infranodus_node_url(cfg["embed_context"], focus_node)
+        st.link_button(
+            "🔍 Open in InfraNodus",
+            url=node_url,
+            use_container_width=True,
+            help=f"Open the full InfraNodus UI centered on `{focus_node}`.",
+        )
+with fc_col3:
     if focus_node and st.button("❌ Clear focus", use_container_width=True,
                                  help="Return the iframe to the full network view"):
         st.session_state.focus_node = None
         st.rerun()
 
-# Key the iframe on focus_node so Streamlit forces a reload when it changes.
 components.iframe(src=embed_url, height=620, scrolling=False)
+
+if focus_node:
+    st.caption(
+        "ℹ️ The embedded iframe filters the view to the selected node. "
+        "For true node-centering with surrounding neighborhood, click **🔍 Open in InfraNodus** "
+        "above — it opens a new tab with the full InfraNodus UI centered on this node."
+    )
 
 st.divider()
 
@@ -826,7 +864,8 @@ with tab_nodes:
         st.markdown("#### Top 20 Influential Nodes")
         st.caption(
             f"From the {actual_resolution}-node topology · "
-            "🎯 **click any row to focus the live graph on that node**"
+            "🎯 **click any row** to filter the live iframe to that node, "
+            "or use the 🔍 button afterwards for true centering."
         )
         nodes_df = top_nodes_dataframe(network, limit=20)
 
@@ -840,11 +879,16 @@ with tab_nodes:
             key="top_nodes_table",
         )
 
-        # If user clicked a row, capture the node label and trigger iframe refocus.
-        sel_rows = (selection.get("selection", {}) if isinstance(selection, dict)
-                    else getattr(selection, "selection", {}).get("rows", []))
-        if isinstance(sel_rows, dict):
-            sel_rows = sel_rows.get("rows", [])
+        # Extract picked row index (handle both old and new Streamlit selection shapes)
+        sel_rows = []
+        try:
+            if hasattr(selection, "selection"):
+                sel_rows = selection.selection.get("rows", [])
+            elif isinstance(selection, dict):
+                sel_rows = selection.get("selection", {}).get("rows", [])
+        except Exception:
+            sel_rows = []
+
         if sel_rows:
             picked_idx = sel_rows[0]
             if 0 <= picked_idx < len(nodes_df):
@@ -853,12 +897,19 @@ with tab_nodes:
                     st.session_state.focus_node = picked_node
                     st.rerun()
 
-        # Also provide a quick-clear under the table
+        # Quick access: if a focus is active, show a direct-link button here too
         if st.session_state.get("focus_node"):
-            st.info(
-                f"🎯 Live graph focused on **`{st.session_state.focus_node}`**. "
-                "Scroll up to see the iframe or click 'Clear focus' above it."
-            )
+            fn = st.session_state.focus_node
+            fn_url = build_infranodus_node_url(cfg["embed_context"], fn)
+            colA, colB = st.columns(2)
+            with colA:
+                st.link_button(f"🔍 Open `{fn}` in InfraNodus",
+                               url=fn_url, use_container_width=True)
+            with colB:
+                if st.button("❌ Clear focus", use_container_width=True,
+                             key="clear_focus_table"):
+                    st.session_state.focus_node = None
+                    st.rerun()
 
     with col2:
         st.markdown("#### Betweenness Centrality Distribution")
