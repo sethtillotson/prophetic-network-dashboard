@@ -6,4 +6,3 @@ networkx>=3.3
 pillow>=10.4.0
 requests>=2.32.0
 python-dotenv>=1.0.1
-openai>=1.40.0
