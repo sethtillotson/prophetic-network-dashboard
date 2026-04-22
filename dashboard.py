@@ -311,27 +311,31 @@ else:
 st.markdown("### 📊 Top 20 Influential Nodes")
 
 if nodes:
-    # Sort by betweenness centrality
-    nodes_sorted = sorted(
-        nodes,
-        key=lambda n: n.get("betweenness_centrality", 0),
-        reverse=True
-    )[:20]
-    
+    def _bc(n):
+        for k in ('bc2', 'bc', 'betweenness', 'betweenness_centrality'):
+            if n.get(k) is not None:
+                try: return float(n[k])
+                except: pass
+        return 0.0
+
+    nodes_sorted = sorted(nodes, key=_bc, reverse=True)[:20]
+
     table_data = []
     for rank, node in enumerate(nodes_sorted, 1):
         table_data.append({
             "Rank": rank,
-            "Node": node.get("name", node.get("id", "?")),
-            "Betweenness": f"{node.get('betweenness_centrality', 0):.4f}",
+            "Node": node.get("name") or node.get("label") or node.get("id") or "?",
+            "Betweenness": f"{_bc(node):.4f}",
             "Degree": node.get("degree", 0),
-            "Cluster": node.get("cluster", "—"),
+            "Weight": node.get("weight", 0),
+            "Cluster": node.get("cluster", node.get("community", "—")),
         })
-    
+
     df = pd.DataFrame(table_data)
     st.dataframe(df, use_container_width=True, hide_index=True)
 else:
     st.info("No node data available.")
+
 
 
 # ═══════════════════════════════════════════════════════════════
