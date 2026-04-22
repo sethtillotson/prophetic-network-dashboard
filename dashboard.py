@@ -90,22 +90,24 @@ LAYER_CONFIG = {
     },
 }
 
-EMBED_PARAMS = (
-    "background=dark"
-    "&show_analytics=1"
-    "&most_influential=bc2"
-    "&maxnodes=150"
-    "&labelsize=proportional"
-    "&edgestype=curve"
-    "&drawedges=true"
-    "&drawnodes=true"
-    "&labelsizeratio=2"
-    "&dynamic=highlight"
-    "&cutgraph=1"
-    "&selected=highlight"
-    "&hide_always=1"
-    "&link_hashtags=1"
-)
+def build_embed_params(max_nodes: int = 150) -> str:
+    """Build the InfraNodus iframe query string with a configurable node cap."""
+    return (
+        "background=dark"
+        "&show_analytics=1"
+        "&most_influential=bc2"
+        f"&maxnodes={max_nodes}"
+        "&labelsize=proportional"
+        "&edgestype=curve"
+        "&drawedges=true"
+        "&drawnodes=true"
+        "&labelsizeratio=2"
+        "&dynamic=highlight"
+        "&cutgraph=1"
+        "&selected=highlight"
+        "&hide_always=1"
+        "&link_hashtags=1"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  SERVICES  (cached resources — only one per session)
@@ -268,6 +270,14 @@ with st.sidebar:
     with col_b:
         date_end = st.date_input("End", value=date(2026, 4, 22), key="date_end")
 
+    max_nodes = st.select_slider(
+        "🎯 Nodes in focus",
+        options=[150, 250, 350, 500],
+        value=150,
+        help="How many of the most-influential nodes to render in the live graph. "
+             "More nodes = richer topology but slower initial load.",
+    )
+
     use_live_stats = st.toggle(
         "🔄 Refresh live stats from API",
         value=False,
@@ -349,10 +359,13 @@ st.divider()
 #  LIVE EMBED — the interactive InfraNodus graph
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("### 🌌 Live Network Graph")
-embed_url = f"https://infranodus.com/{cfg['embed_context']}?{EMBED_PARAMS}"
-st.caption(f"Rendering directly from InfraNodus · top {150} nodes by betweenness · "
-           f"[Open in new tab →]({embed_url})")
+embed_url = f"https://infranodus.com/{cfg['embed_context']}?{build_embed_params(max_nodes)}"
+st.caption(
+    f"Rendering directly from InfraNodus · **top {max_nodes} nodes** by betweenness · "
+    f"[Open in new tab →]({embed_url})"
+)
 
+# Force iframe reload when node count changes by including it in the key/src
 components.iframe(src=embed_url, height=620, scrolling=False)
 
 st.divider()
