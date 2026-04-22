@@ -1,311 +1,265 @@
 """
 Network Graph Visualizer
 Creates interactive Plotly visualizations of knowledge graphs
+Hardened for InfraNodus field-name variations
 """
 
 import plotly.graph_objects as go
 import networkx as nx
 import numpy as np
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any
+
 
 class GraphVisualizer:
     """Interactive network graph visualization with Plotly"""
-    
+
     def __init__(self):
-        """Initialize visualizer"""
         self.color_scale = [
             '#667eea', '#764ba2', '#f093fb', '#4facfe',
             '#00f2fe', '#43e97b', '#38f9d7', '#fa709a',
-            '#fee140', '#30cfd0', '#a8edea'
+            '#fee140', '#30cfd0', '#a8edea',
         ]
-    
+
+    @staticmethod
+    def _node_id(node: Dict) -> str:
+        """Extract a stable node identifier (InfraNodus uses 'name' primarily)."""
+        return (
+            node.get('name') or node.get('id') or node.get('label')
+            or node.get('uid') or ''
+        )
+
+    @staticmethod
+    def _node_label(node: Dict) -> str:
+        """Extract a display label."""
+        return (
+            node.get('label') or node.get('name') or node.get('id') or '?'
+        )
+
+    @staticmethod
+    def _node_bc(node: Dict) -> float:
+        """Extract betweenness centrality — InfraNodus uses 'bc' or 'bc2'."""
+        for key in ('bc2', 'bc', 'betweenness', 'betweenness_centrality'):
+            v = node.get(key)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+
+    @staticmethod
+    def _node_cluster(node: Dict) -> int:
+        """Extract cluster/community id."""
+        for key in ('cluster', 'community', 'group', 'clusterID'):
+            v = node.get(key)
+            if v is not None:
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    continue
+        return 0
+
+    @staticmethod
+    def _edge_endpoints(edge: Dict) -> tuple:
+        """Extract source/target — InfraNodus may use 'source'/'target' or 'from'/'to'."""
+        src = edge.get('source') or edge.get('from') or edge.get('src') or edge.get('start')
+        tgt = edge.get('target') or edge.get('to') or edge.get('dst') or edge.get('end')
+        return src, tgt
+
     def create_network_graph(
         self,
         network_data: Dict[str, Any],
         top_n: int = 150,
-        highlight_node: Optional[str] = None
+        highlight_node: Optional[str] = None,
     ) -> go.Figure:
         """
-        Create interactive network graph
-        
-        Args:
-            network_data: Network data from InfraNodus API
-            top_n: Number of top nodes to display
-            highlight_node: Node to highlight (optional)
-            
-        Returns:
-            Plotly figure
+        Create interactive network graph.
+        Accepts either flat {nodes,edges} or wrapped {graph:{nodes,edges}}.
         """
-        # Extract graph data
-        nodes = network_data.get('nodes', [])[:top_n]
-        edges = network_data.get('edges', [])
-        
-        # Build NetworkX graph for layout
+        # Defensive unwrap: accept both flat and wrapped shapes
+        if 'graph' in network_data and isinstance(network_data['graph'], dict):
+            network_data = network_data['graph']
+
+        all_nodes = network_data.get('nodes') or []
+        all_edges = (
+            network_data.get('edges')
+            or network_data.get('relations')
+            or network_data.get('links')
+            or []
+        )
+
+        # Sort by betweenness DESC and take top_n
+        sorted_nodes = sorted(all_nodes, key=self._node_bc, reverse=True)[:top_n]
+        top_ids = {self._node_id(n) for n in sorted_nodes if self._node_id(n)}
+
+        # Build NetworkX graph
         G = nx.Graph()
-        
-        # Add nodes with attributes
-        for node in nodes:
+        for node in sorted_nodes:
+            nid = self._node_id(node)
+            if not nid:
+                continue
             G.add_node(
-                node.get('id'),
-                label=node.get('label', ''),
-                bc=node.get('betweenness', 0.0),
-                degree=node.get('degree', 0),
-                weight=node.get('weight', 0),
-                cluster=node.get('cluster', 0)
+                nid,
+                label=self._node_label(node),
+                bc=self._node_bc(node),
+                degree=int(node.get('degree', 0) or 0),
+                weight=int(node.get('weight', 0) or 0),
+                cluster=self._node_cluster(node),
             )
-        
-        # Add edges
-        edge_list = []
-        for edge in edges:
-            source = edge.get('source')
-            target = edge.get('target')
-            weight = edge.get('weight', 1)
-            
-            # Only add if both nodes are in top_n
-            if source in G.nodes and target in G.nodes:
-                G.add_edge(source, target, weight=weight)
-                edge_list.append((source, target, weight))
-        
-        # Compute spring layout
+
+        # Add edges (only between top_n nodes)
+        for edge in all_edges:
+            src, tgt = self._edge_endpoints(edge)
+            if src in top_ids and tgt in top_ids:
+                try:
+                    w = float(edge.get('weight', 1) or 1)
+                except (TypeError, ValueError):
+                    w = 1.0
+                G.add_edge(src, tgt, weight=w)
+
+        if G.number_of_nodes() == 0:
+            # Return empty figure with message
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No graph data to display.<br>Check that nodes and edges are loaded.",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=16, color="gray"),
+            )
+            fig.update_layout(height=600, plot_bgcolor='rgba(240,242,246,0.5)')
+            return fig
+
+        # Layout
         try:
             pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
-        except:
-            # Fallback to circular layout if spring fails
+        except Exception:
             pos = nx.circular_layout(G)
-        
-        # Create edge traces
-        edge_traces = []
-        for source, target, weight in edge_list:
-            x0, y0 = pos[source]
-            x1, y1 = pos[target]
-            
-            # Edge thickness based on weight
-            width = min(weight / 50, 5)  # Cap at 5px
-            
-            edge_trace = go.Scatter(
-                x=[x0, x1, None],
-                y=[y0, y1, None],
-                mode='lines',
-                line=dict(width=width, color='rgba(125, 125, 125, 0.3)'),
-                hoverinfo='none',
-                showlegend=False
-            )
-            edge_traces.append(edge_trace)
-        
-        # Create node trace
-        node_x = []
-        node_y = []
-        node_text = []
-        node_size = []
-        node_color = []
-        node_hover = []
-        
-        for node in G.nodes(data=True):
-            node_id = node[0]
-            node_data = node[1]
-            
-            x, y = pos[node_id]
+
+        # Edge traces
+        edge_x, edge_y, edge_widths = [], [], []
+        for u, v, d in G.edges(data=True):
+            x0, y0 = pos[u]
+            x1, y1 = pos[v]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+            edge_widths.append(d.get('weight', 1))
+
+        edge_trace = go.Scatter(
+            x=edge_x,
+            y=edge_y,
+            mode='lines',
+            line=dict(width=1, color='rgba(125,125,125,0.35)'),
+            hoverinfo='none',
+            showlegend=False,
+        )
+
+        # Node trace
+        node_x, node_y = [], []
+        node_text, node_size, node_color, node_hover = [], [], [], []
+
+        for nid, data in G.nodes(data=True):
+            x, y = pos[nid]
             node_x.append(x)
             node_y.append(y)
-            
-            label = node_data.get('label', node_id)
-            bc = node_data.get('bc', 0.0)
-            degree = node_data.get('degree', 0)
-            weight = node_data.get('weight', 0)
-            cluster = node_data.get('cluster', 0)
-            
-            # Node size based on betweenness centrality
-            size = 10 + (bc * 50)  # Scale BC to visible size
-            node_size.append(size)
-            
-            # Node color based on cluster
-            color_idx = cluster % len(self.color_scale)
-            node_color.append(self.color_scale[color_idx])
-            
-            # Node label (show @ prefix if exists)
+            label = data.get('label', nid)
+            bc = data.get('bc', 0.0)
+            degree = data.get('degree', 0)
+            weight = data.get('weight', 0)
+            cluster = data.get('cluster', 0)
+
             node_text.append(label)
-            
-            # Hover text
-            hover_text = (
+            node_size.append(10 + bc * 100)  # Scale BC to visible size
+            node_color.append(self.color_scale[cluster % len(self.color_scale)])
+            node_hover.append(
                 f"<b>{label}</b><br>"
                 f"BC: {bc:.4f}<br>"
                 f"Degree: {degree}<br>"
                 f"Weight: {weight:,}<br>"
                 f"Cluster: {cluster}"
             )
-            node_hover.append(hover_text)
-        
+
         node_trace = go.Scatter(
             x=node_x,
             y=node_y,
             mode='markers+text',
             text=node_text,
             textposition='top center',
-            textfont=dict(size=8),
+            textfont=dict(size=9, color='#ffffff'),
             hovertext=node_hover,
             hoverinfo='text',
             marker=dict(
                 size=node_size,
                 color=node_color,
-                line=dict(width=2, color='white'),
-                opacity=0.9
-            ),
-            showlegend=False
-        )
-        
-        # Highlight specific node if requested
-        if highlight_node:
-            highlight_trace = None
-            for node in G.nodes(data=True):
-                node_id = node[0]
-                node_data = node[1]
-                label = node_data.get('label', '')
-                
-                if label.lower() == highlight_node.lower():
-                    x, y = pos[node_id]
-                    highlight_trace = go.Scatter(
-                        x=[x],
-                        y=[y],
-                        mode='markers',
-                        marker=dict(
-                            size=40,
-                            color='rgba(255, 0, 0, 0)',
-                            line=dict(width=4, color='red')
-                        ),
-                        hoverinfo='skip',
-                        showlegend=False
-                    )
-                    break
-        
-        # Create figure
-        fig = go.Figure()
-        
-        # Add all edge traces
-        for edge_trace in edge_traces:
-            fig.add_trace(edge_trace)
-        
-        # Add node trace
-        fig.add_trace(node_trace)
-        
-        # Add highlight if exists
-        if highlight_node and highlight_trace:
-            fig.add_trace(highlight_trace)
-        
-        # Update layout
-        fig.update_layout(
-            title=dict(
-                text=f"Knowledge Graph Network (Top {top_n} Nodes)",
-                font=dict(size=20)
+                line=dict(width=1.5, color='white'),
+                opacity=0.92,
             ),
             showlegend=False,
+        )
+
+        fig = go.Figure(data=[edge_trace, node_trace])
+
+        # Optional highlight
+        if highlight_node:
+            for nid, data in G.nodes(data=True):
+                if data.get('label', '').lower() == highlight_node.lower():
+                    x, y = pos[nid]
+                    fig.add_trace(go.Scatter(
+                        x=[x], y=[y], mode='markers',
+                        marker=dict(size=40, color='rgba(255,0,0,0)',
+                                    line=dict(width=4, color='red')),
+                        hoverinfo='skip', showlegend=False,
+                    ))
+                    break
+
+        fig.update_layout(
+            title=dict(text=f"Knowledge Graph Network (Top {top_n} Nodes)",
+                       font=dict(size=18)),
+            showlegend=False,
             hovermode='closest',
-            margin=dict(b=0, l=0, r=0, t=40),
+            margin=dict(b=10, l=10, r=10, t=50),
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            plot_bgcolor='rgba(240, 242, 246, 0.5)',
-            height=700
+            plot_bgcolor='#0e1117',
+            paper_bgcolor='#0e1117',
+            font=dict(color='#fafafa'),
+            height=700,
         )
-        
         return fig
-    
-    def create_community_timeline(
-        self,
-        timeline_data: List[Dict[str, Any]]
-    ) -> go.Figure:
-        """
-        Create stacked area chart for community evolution
-        
-        Args:
-            timeline_data: List of {date, cluster, influence} dicts
-            
-        Returns:
-            Plotly figure
-        """
+
+    def create_community_timeline(self, timeline_data):
+        """Stacked area chart — unchanged logic."""
         fig = go.Figure()
-        
-        # Group by cluster
         clusters = {}
-        for record in timeline_data:
-            cluster = record.get('cluster', 'Unknown')
-            if cluster not in clusters:
-                clusters[cluster] = {'dates': [], 'influence': []}
-            clusters[cluster]['dates'].append(record['date'])
-            clusters[cluster]['influence'].append(record['influence'])
-        
-        # Add trace for each cluster
-        for i, (cluster, data) in enumerate(clusters.items()):
-            color_idx = i % len(self.color_scale)
+        for r in timeline_data:
+            c = r.get('cluster', 'Unknown')
+            clusters.setdefault(c, {'dates': [], 'influence': []})
+            clusters[c]['dates'].append(r['date'])
+            clusters[c]['influence'].append(r['influence'])
+        for i, (c, d) in enumerate(clusters.items()):
             fig.add_trace(go.Scatter(
-                x=data['dates'],
-                y=data['influence'],
-                name=cluster,
-                stackgroup='one',
-                mode='lines',
-                line=dict(width=0),
-                fillcolor=self.color_scale[color_idx],
-                hovertemplate='%{y:.1f}%<br>%{fullData.name}'
+                x=d['dates'], y=d['influence'], name=str(c),
+                stackgroup='one', mode='lines', line=dict(width=0),
+                fillcolor=self.color_scale[i % len(self.color_scale)],
             ))
-        
-        fig.update_layout(
-            title="Community Evolution Over Time",
-            xaxis_title="Date",
-            yaxis_title="% Influence (BC Ratio)",
-            hovermode='x unified',
-            height=400
-        )
-        
+        fig.update_layout(title="Community Evolution Over Time",
+                          xaxis_title="Date", yaxis_title="% Influence",
+                          hovermode='x unified', height=400)
         return fig
-    
-    def create_sentiment_chart(
-        self,
-        sentiment_data: List[Dict[str, Any]]
-    ) -> go.Figure:
-        """
-        Create multi-line sentiment trend chart
-        
-        Args:
-            sentiment_data: List of {date, positive, negative, neutral} dicts
-            
-        Returns:
-            Plotly figure
-        """
+
+    def create_sentiment_chart(self, sentiment_data):
+        """Sentiment trend lines — unchanged logic."""
         dates = [d['date'] for d in sentiment_data]
-        positive = [d['positive'] for d in sentiment_data]
-        negative = [d['negative'] for d in sentiment_data]
-        neutral = [d['neutral'] for d in sentiment_data]
-        
         fig = go.Figure()
-        
-        fig.add_trace(go.Scatter(
-            x=dates,
-            y=positive,
-            name='Positive',
-            line=dict(color='#28a745', width=3),
-            mode='lines+markers'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=dates,
-            y=negative,
-            name='Negative',
-            line=dict(color='#dc3545', width=3),
-            mode='lines+markers'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=dates,
-            y=neutral,
-            name='Neutral',
-            line=dict(color='#6c757d', width=3),
-            mode='lines+markers'
-        ))
-        
-        fig.update_layout(
-            title="Sentiment Trend Analysis",
-            xaxis_title="Date",
-            yaxis_title="Percentage",
-            hovermode='x unified',
-            height=400
-        )
-        
+        for key, color in [('positive', '#28a745'),
+                            ('negative', '#dc3545'),
+                            ('neutral', '#6c757d')]:
+            fig.add_trace(go.Scatter(
+                x=dates, y=[d[key] for d in sentiment_data],
+                name=key.capitalize(),
+                line=dict(color=color, width=3),
+                mode='lines+markers',
+            ))
+        fig.update_layout(title="Sentiment Trend Analysis",
+                          xaxis_title="Date", yaxis_title="Percentage",
+                          hovermode='x unified', height=400)
         return fig
